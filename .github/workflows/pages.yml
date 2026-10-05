@@ -1,0 +1,48 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # re-run by hand from the Actions tab
+  repository_dispatch:
+    types: [pcb-push] # sent by the PCB repo on every push, so new commits show within a minute
+  schedule:
+    - cron: "17 */2 * * *" # fallback refresh of the index every 2 hours
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci # also applies patches/ (patch-package)
+      - run: npm run build # typecheck + vite build -> dist/
+      # The GitHub index the site reads instead of calling the API from browsers: every commit,
+      # branch and file list of the repo, from a clone without file contents (no API requests).
+      # Keep in step with src/github/config.ts.
+      - run: node tools/build-index.mjs dist/index shivam6279/PCB=https://github.com/shivam6279/PCB.git
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

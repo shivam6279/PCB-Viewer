@@ -1,0 +1,12 @@
+node_modules/
+spikes/*/out/
+spikes/*/log.txt
+spikes/*/log2.txt
+.superpowers/
+
+dist/
+test-results/
+playwright-report/
+scratch/
+# local GitHub index (npm run index); the deploy builds its own
+public/index/

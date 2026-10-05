@@ -1,0 +1,26 @@
+/* Design tokens: the dark UI theme. */
+:root {
+	--bg-chrome: #282828;
+	--bg-input: #1e1e1e;
+	--bg-raised: #484848;
+	--bg-selected: #2b3e50;
+	--bg-canvas: #c8c8c8;
+	--accent: #3a75ad;
+	--text: #e8e8e8;
+	--text-dim: #a0a0a0;
+	--text-disabled: #5c5c5c;
+	--border: #3a3a3a;
+	--warning: #e0a030;
+	--doc-sch: #e3bf63;
+	--doc-pcb: #3fae5a;
+	--doc-folder: #e3bf63;
+
+	--font-ui: "Segoe UI", system-ui, -apple-system, sans-serif;
+	--font-size-ui: 13px;
+	--font-size-small: 11px;
+	--row-height: 24px;
+	--indent: 18px;
+	--topbar-height: 72px;
+	--docbar-height: 34px;
+	--sidebar-width: 306px;
+}
