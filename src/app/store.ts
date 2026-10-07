@@ -25,6 +25,7 @@ export type Screen =
 // PCB-only selections: one board object (pad, track, via…), a net or component the schematic does not have.
 export type Selection =
 	| { kind: "net"; netId: number }
+	| { kind: "bundle"; bundleId: number } // a bus or signal harness
 	| { kind: "component"; id: string }
 	| { kind: "pcbObject"; id: number }
 	| { kind: "pcbNet"; name: string }

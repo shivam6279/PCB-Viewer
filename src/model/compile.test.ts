@@ -183,3 +183,85 @@ test("a label on a harness wire names the harness; a BUNDLE.MEMBER label on a wi
 	expect(sda.netName).toBe("I2C_MAIN.SDA")
 	expect(p.nets.some(n => n.netName === "I2C_MAIN")).toBe(false) // the harness label is not a net
 })
+
+// Parent: a bus labelled PWM_WH[1..2] from the kid's entry PWM_3P[1..2]; its slices labelled PWM_WH1/2.
+// Kid: port PWM_3P[1..2] on a bus; wires labelled PWM_3P1 / PWM_3P2.
+test("buses join their slices across levels by position, and list them as one bundle", () => {
+	const parent: SheetData = {
+		objects: [
+			{ kind: "entry", i: 1, symbol: 9, name: "PWM_3P[1..2]", at: P(100, 0), harness: false },
+			{ kind: "bus", i: 2, points: [P(100, 0), P(200, 0)] },
+			{ kind: "label", i: 3, name: "PWM_WH[1..2]", at: P(150, 0) },
+			{ kind: "busEntry", i: 4, points: [P(180, 0), P(190, 10)] },
+			wire(5, [190, 10], [300, 10]),
+			{ kind: "label", i: 6, name: "PWM_WH1", at: P(250, 10) },
+			wire(7, [190, 30], [300, 30]),
+			{ kind: "label", i: 8, name: "PWM_WH2", at: P(250, 30) },
+		],
+		components: [],
+		symbols: [{ i: 9, designator: "U_KID", fileName: "Kid.SchDoc", uniqueId: "K" }],
+	}
+	const kid: SheetData = {
+		objects: [
+			{ kind: "port", i: 1, name: "PWM_3P[1..2]", ends: [P(0, 0), P(50, 0)], harness: false },
+			{ kind: "bus", i: 2, points: [P(50, 0), P(100, 0)] },
+			wire(3, [0, 50], [100, 50]),
+			{ kind: "label", i: 4, name: "PWM_3P1", at: P(50, 50) },
+			wire(5, [0, 70], [100, 70]),
+			{ kind: "label", i: 6, name: "PWM_3P2", at: P(50, 70) },
+		],
+		components: [],
+		symbols: [],
+	}
+	const p = compileProject({
+		instances: [
+			{ id: "P", docPath: "P", parentId: null, designator: null, channel: null },
+			{ id: "P/U_KID", docPath: "K", parentId: "P", designator: "U_KID", channel: null },
+		],
+		sheets: new Map([
+			["P", parent],
+			["K", kid],
+		]),
+		designatorFormat: "$Component_$ChannelIndex",
+	})
+	const at = (inst: string, i: number) => p.netAt[inst]![i]!
+	expect(at("P/U_KID", 3)).toBe(at("P", 5))
+	expect(at("P/U_KID", 5)).toBe(at("P", 7))
+	expect(at("P/U_KID", 3)).not.toBe(at("P/U_KID", 5))
+	expect(p.nets[at("P", 5)]!.netName).toBe("PWM_WH1") // the higher level names it
+	// The range-named port and entry are the bus's, not nets of their own.
+	expect(p.netAt["P/U_KID"]![1]).toBeUndefined()
+	expect(p.netAt["P"]![1]).toBeUndefined()
+
+	expect(p.bundles).toHaveLength(1)
+	const bus = p.bundles[0]!
+	expect(bus).toMatchObject({ kind: "bus", name: "PWM_WH[1..2]" })
+	expect(bus.nets).toEqual([at("P", 5), at("P", 7)].sort((a, b) => a - b))
+	for (const [inst, i] of [["P", 1], ["P", 2], ["P", 3], ["P", 4], ["P/U_KID", 1], ["P/U_KID", 2]] as const) expect(p.bundleAt[inst]![i]).toBe(0)
+	expect(p.netBundles[at("P", 5)]).toEqual([0])
+})
+
+test("a harness is a bundle carrying its members, including BUNDLE.MEMBER labelled nets", () => {
+	const sheet: SheetData = {
+		objects: [
+			{ kind: "harnessWire", i: 1, points: [P(0, 0), P(100, 0)] },
+			{ kind: "label", i: 2, name: "I2C", at: P(50, 0) },
+			{ kind: "harnessConnector", i: 3, tip: P(100, 0), entries: [{ i: 4, name: "SDA", at: P(150, 10) }] },
+			wire(5, [150, 10], [250, 10]),
+			wire(6, [0, 100], [100, 100]),
+			{ kind: "label", i: 7, name: "I2C.SCL", at: P(50, 100) },
+		],
+		components: [],
+		symbols: [],
+	}
+	const p = compileProject({
+		instances: [{ id: "S", docPath: "S", parentId: null, designator: null, channel: null }],
+		sheets: new Map([["S", sheet]]),
+		designatorFormat: "$Component_$ChannelIndex",
+	})
+	expect(p.bundles).toHaveLength(1)
+	expect(p.bundles[0]).toMatchObject({ kind: "harness", name: "I2C" })
+	expect(p.bundles[0]!.nets).toEqual([p.netAt.S![5]!, p.netAt.S![6]!].sort((a, b) => a - b))
+	expect(p.bundleAt.S![1]).toBe(0)
+	expect(p.bundleAt.S![3]).toBe(0)
+})

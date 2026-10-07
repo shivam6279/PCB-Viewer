@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { useAppStore } from "../app/store"
+import { useAppStore, type Selection } from "../app/store"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import { channelOf, flattenHierarchy, type Channel, type HierarchyNode } from "../model/hierarchy"
 import type { ProjectSummary } from "../model/load-project"
 import type { Parser } from "../parse/parser"
 import { basename } from "../source/paths"
 import type { ProjectSource } from "../source/types"
-import { buildPortMenu, classifyClick, jumpObjects, type ClickAction, type MenuNode } from "./interaction"
+import { buildPortMenu, classifyClick, highlightObjects, jumpObjects, type ClickAction, type MenuNode } from "./interaction"
 import { PortMenu } from "./PortMenu"
 import { prepareSheetSvg } from "./prepare-svg"
 import { createScene, frameObjects, hitTest, markNotFitted, paintOverlay, type Scene } from "./sheet-scene"
@@ -108,6 +108,7 @@ export function SchematicView({ source, project, node, parser }: {
 		setMenu(null)
 		if (!action) return select(null)
 		if (action.kind === "net") return select({ kind: "net", netId: action.netId })
+		if (action.kind === "bundle") return select({ kind: "bundle", bundleId: action.bundleId })
 		if (action.kind === "component") return select({ kind: "component", id: action.id })
 		if (action.kind === "symbol") return selectSheet(action.childId)
 		const net = data!.compiled.nets[action.netId]!
@@ -136,6 +137,9 @@ export function SchematicView({ source, project, node, parser }: {
 		const show = (v: ViewBox) => {
 			view.current = v
 			svg.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`)
+			// Sheet units per screen pixel ("meet" fit): CSS widths in sheet units with a screen-pixel floor.
+			const s = size()
+			svg.style.setProperty("--upx", String(Math.max(v.w / s.width, v.h / s.height)))
 		}
 		const apply = (v: ViewBox) => {
 			show(v)
@@ -254,15 +258,23 @@ export function SchematicView({ source, project, node, parser }: {
 	useEffect(() => {
 		const sc = scene.current
 		if (!sc || state.status !== "ready") return
-		const netObjects = (netId: number) => data?.compiled.nets[netId]?.occurrences.find(o => o.instanceId === node.id)?.objects ?? null
+		const lit = (t: Selection | ClickAction | null) => {
+			if (!data || !t) return null
+			if (t.kind === "net" || t.kind === "port") return highlightObjects(data.compiled, node.id, { kind: "net", netId: t.netId })
+			if (t.kind === "bundle") return highlightObjects(data.compiled, node.id, t)
+			return null
+		}
+		const selected = lit(selection)
+		// Hovering what is already selected adds nothing over the selection.
+		const hoverIsSelection = JSON.stringify(hover && (hover.kind === "port" ? { kind: "net", netId: hover.netId } : hover)) === JSON.stringify(selection)
 		const ownerOf = (id: string) => {
 			const c = data?.compiled.components.find(c => c.id === id)
 			return c && c.instanceId === node.id ? c.i : null
 		}
 		paintOverlay(sc, {
-			selectedNet: selection?.kind === "net" ? netObjects(selection.netId) : null,
+			selectedNet: selected,
 			selectedOwner: selection?.kind === "component" ? ownerOf(selection.id) : null,
-			hoverNet: hover?.kind === "net" || hover?.kind === "port" ? netObjects(hover.netId) : null,
+			hoverNet: hoverIsSelection ? null : lit(hover),
 			hoverOwner: hover?.kind === "component" ? ownerOf(hover.id) : hover?.kind === "symbol" ? hover.symbolI : null,
 			diff: mark && !mark.mostly ? { indices: [...mark.ids], tone: mark.tone } : null,
 		})

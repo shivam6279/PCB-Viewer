@@ -25,6 +25,8 @@ export type SheetObject =
 	| { kind: "offsheet"; i: number; name: string; at: Pt }
 	| { kind: "entry"; i: number; symbol: number; name: string; at: Pt; harness: boolean }
 	| { kind: "harnessWire"; i: number; points: Pt[] }
+	| { kind: "bus"; i: number; points: Pt[] }
+	| { kind: "busEntry"; i: number; points: Pt[] } // the short diagonal from a bus to a wire
 	| { kind: "harnessConnector"; i: number; tip: Pt; entries: { i: number; name: string; at: Pt }[] }
 
 export interface SheetComponent {

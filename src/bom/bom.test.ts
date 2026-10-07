@@ -92,6 +92,9 @@ describe("schematic and board parts", () => {
 		const compiled = {
 			nets: [],
 			netAt: {},
+			bundles: [],
+			bundleAt: {},
+			netBundles: {},
 			components: [{ id: "a#1", instanceId: "a", i: 1, designator: "C8", logicalDesignator: "C8", comment: "=Value", description: "", libReference: "", footprint: "", uniqueId: "X", uniquePath: "\X", parameters: [{ name: "Value", value: "22nF" }] }],
 		}
 		expect(schematicParts(compiled)[0]!.comment).toBe("22nF")

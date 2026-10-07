@@ -90,3 +90,23 @@ test("harness: connector tip, harness wire and harness port form one bundle whos
 	expect(h.members.get("SCL")).toBe(c.netOf.get(2))
 	expect(c.netOf.get(64)).toBeUndefined() // a harness port is not an ordinary net member
 })
+
+test("a bus gathers its lines, entries and range-named labels/ports; equal bus labels join buses", () => {
+	const P = (x: number, y: number) => ({ x, y })
+	const c = sheetConnectivity(
+		sheet([
+			{ kind: "bus", i: 1, points: [P(0, 0), P(100, 0)] },
+			{ kind: "label", i: 2, name: "D[0..1]", at: P(50, 0) },
+			{ kind: "busEntry", i: 3, points: [P(80, 0), P(90, 10)] },
+			{ kind: "bus", i: 4, points: [P(0, 200), P(100, 200)] },
+			{ kind: "label", i: 5, name: "D[0..1]", at: P(50, 200) },
+			{ kind: "port", i: 6, name: "D[0..1]", ends: [P(100, 200), P(150, 200)], harness: false },
+			wire(7, [90, 10], [200, 10]),
+			{ kind: "label", i: 8, name: "D1", at: P(150, 10) },
+		]),
+	)
+	expect(c.buses).toHaveLength(1)
+	expect(c.buses[0]!.objects.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6])
+	expect(c.buses[0]!.members.get(1)).toEqual([c.netOf.get(7)])
+	expect(c.netOf.get(6)).toBeUndefined() // the range-named port is the bus's, not a net
+})

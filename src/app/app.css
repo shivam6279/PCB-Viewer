@@ -83,18 +83,32 @@ button { font: inherit; color: inherit; }
 .sch-not-fitted { pointer-events: none; }
 .sch-not-fitted line { stroke: #e0201b; stroke-width: 4; stroke-linecap: butt; }
 
-/* Schematic interaction. */
-.sch-host .hit { stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; fill: none; pointer-events: stroke; }
+/* Schematic interaction. A hovered or selected net's wires and pins widen to 1.5x their own width
+   + 1.2 sheet units, never under 3.75 screen px (--upx = sheet units per px, set on zoom). In SVG user
+   space 1px = 1 unit. The hit stroke is the same width, so hovering starts exactly where the highlight
+   would be drawn. Selected, wires get a faint, tight glow in their own colour (--c); text gets none, only its box. */
+.sch-host .net-line, .sch-host .hit { --net-hover-width: max(calc(var(--w, 1) * 1.5px + 1.2px), calc(var(--upx, 1) * 3.75px)); }
+.sch-host .hit { stroke: transparent; stroke-width: var(--net-hover-width); fill: none; pointer-events: stroke; }
 .sch-overlay { pointer-events: none; }
 .sch-overlay .hit { display: none; }
 .sch-overlay .sel-dim { fill: #6e6e6e; opacity: 0.3; }
 .sch-overlay .hover-box { fill: none; stroke: #a58cff; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 .sch-overlay .sel-box { fill: #ffffff; stroke: #2f6fd6; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
-.sch-overlay .sel-net { filter: drop-shadow(0 0 1.2px #a58cff) drop-shadow(0 0 1.2px #a58cff); }
 .sch-overlay .sel-net[data-k="27"] polyline, .sch-overlay .sel-net[data-k="27"] line,
-.sch-overlay .sel-net[data-k="2"] line, .sch-overlay .sel-net[data-k="2"] polyline { stroke: #1b1b7a; stroke-width: 3px; vector-effect: non-scaling-stroke; }
+.sch-overlay .sel-net[data-k="26"] polyline, .sch-overlay .sel-net[data-k="37"] line,
+.sch-overlay .sel-net[data-k="2"] line, .sch-overlay .sel-net[data-k="2"] polyline {
+	stroke: #1b1b7a; stroke-width: var(--net-hover-width); stroke-linecap: round; stroke-linejoin: round;
+	--glow: max(calc(var(--w, 1) * 0.2px + 0.2px), calc(var(--upx, 1) * 0.6px));
+	filter: drop-shadow(0 0 var(--glow) var(--c, #000080));
+}
 .sch-overlay .hover-net[data-k="27"] polyline, .sch-overlay .hover-net[data-k="27"] line,
-.sch-overlay .hover-net[data-k="2"] line, .sch-overlay .hover-net[data-k="2"] polyline { stroke: #1b1b7a; stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.sch-overlay .hover-net[data-k="26"] polyline, .sch-overlay .hover-net[data-k="37"] line,
+.sch-overlay .hover-net[data-k="2"] line, .sch-overlay .hover-net[data-k="2"] polyline { stroke: #1b1b7a; stroke-width: var(--net-hover-width); stroke-linecap: round; stroke-linejoin: round; }
+/* A harness keeps its band, colours and width: the twist ticks and centre line inside it thicken.
+   Its hover area is the band itself, not wider. */
+.sch-host g[data-k="218"] .hit { stroke-width: max(calc(var(--w, 1) * 1px), calc(var(--upx, 1) * 3.75px)); }
+.sch-overlay :is(.hover-net, .sel-net)[data-k="218"] line { stroke-width: calc(var(--w, 1.5) * 1.8px); }
+.sch-overlay :is(.hover-net, .sel-net)[data-k="218"] polyline:last-of-type { stroke-width: calc(var(--w, 1) * 2px); }
 .sch-overlay .sel-net-box { fill: rgba(165, 140, 255, 0.18); stroke: #9a83ff; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
 .sch-overlay .hover-net-box { fill: none; stroke: #a58cff; stroke-width: 1px; vector-effect: non-scaling-stroke; }
 

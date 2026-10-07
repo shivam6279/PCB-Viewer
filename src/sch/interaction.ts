@@ -14,6 +14,7 @@ export interface Hit {
 
 export type ClickAction =
 	| { kind: "net"; netId: number }
+	| { kind: "bundle"; bundleId: number } // a bus or signal harness: all the nets it carries
 	| { kind: "component"; id: string }
 	| { kind: "port"; netId: number; i: number } // port or sheet entry: the instance menu
 	| { kind: "symbol"; childId: string; symbolI: number }
@@ -23,6 +24,9 @@ const PORT_KINDS = new Set(["18", "16"]) // port, sheet entry
 
 export function classifyClick(hit: Hit, node: HierarchyNode, sheet: SheetData | undefined, compiled: CompiledProject): ClickAction | null {
 	const netAt = compiled.netAt[node.id] ?? {}
+	// Bus lines and entries, harness wires and connectors, and the labels/ports/entries naming them.
+	const bundleId = compiled.bundleAt[node.id]?.[hit.i]
+	if (bundleId !== undefined) return { kind: "bundle", bundleId }
 	if (PORT_KINDS.has(hit.k)) {
 		const netId = netAt[hit.i]
 		return netId === undefined ? null : { kind: "port", netId, i: hit.i }
@@ -134,4 +138,18 @@ export function jumpObjects(net: CompiledNet, instanceId: string, sheet: SheetDa
 	const ports = new Set((sheet?.objects ?? []).filter(o => o.kind === "port" || o.kind === "entry").map(o => o.i))
 	const connectors = objects.filter(i => ports.has(i))
 	return connectors.length > 0 ? connectors : objects
+}
+
+// What lights up on one sheet instance for a net or a bundle: a net with the buses / harnesses carrying
+// it; a bus or harness with every net it carries. Null when none of it is on this sheet.
+export function highlightObjects(
+	compiled: CompiledProject,
+	instanceId: string,
+	target: { kind: "net"; netId: number } | { kind: "bundle"; bundleId: number },
+): number[] | null {
+	const on = (occurrences: { instanceId: string; objects: number[] }[] | undefined) => occurrences?.find(o => o.instanceId === instanceId)?.objects ?? []
+	const netIds = target.kind === "net" ? [target.netId] : (compiled.bundles[target.bundleId]?.nets ?? [])
+	const bundleIds = target.kind === "bundle" ? [target.bundleId] : (compiled.netBundles[target.netId] ?? [])
+	const objects = [...netIds.flatMap(n => on(compiled.nets[n]?.occurrences)), ...bundleIds.flatMap(b => on(compiled.bundles[b]?.occurrences))]
+	return objects.length ? objects : null
 }

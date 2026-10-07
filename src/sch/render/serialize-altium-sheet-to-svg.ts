@@ -26,6 +26,7 @@ import { getSchematicSheetSize } from "./get-schematic-sheet-size"
 import { renderAltiumNegatedText } from "./render-altium-negated-text"
 import { renderSchematicPinEdgeSymbols } from "./render-schematic-pin-edge-symbols"
 import { renderSchematicPinElectricalSymbol } from "./render-schematic-pin-electrical-symbol"
+import { renderSchematicParameterSet } from "./render-schematic-parameter-set"
 import {
   renderSchematicSheetEntry,
   renderSchematicSheetSymbol,
@@ -497,20 +498,15 @@ function renderSchematicRecord(
   }
 
   if (kind === "43") {
-    const location = getSchematicLocation(record)
-    const x = viewport.toX(location.x)
-    const y = viewport.toY(location.y)
-    const name = record.getDecoded("NAME") ?? ""
-    const markerRadius = 2.5
-    const marker = `<circle ${metadata} cx="${formatSvgNumber(x)}" cy="${formatSvgNumber(y)}" r="${formatSvgNumber(markerRadius)}" fill="${color}" stroke="${color}" stroke-width="1"/>`
-    if (!name || options.showText === false) return marker
-    const font = getSchematicFont({
+    return renderSchematicParameterSet({
       record,
+      location: getSchematicLocation(record),
       sheetRecord: context.sheetRecord,
+      viewport,
+      metadata,
+      color,
+      showText: options.showText !== false,
     })
-    const textX = x + 4
-    const textY = y - 4
-    return `<g ${metadata}>${marker}<text x="${formatSvgNumber(textX)}" y="${formatSvgNumber(textY)}" fill="${color}" ${font.attributes} text-anchor="start" dominant-baseline="auto">${escapeXml(name)}</text></g>`
   }
 
   if (kind === "30") {

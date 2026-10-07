@@ -64,6 +64,16 @@ export function extractSheet(document: AltiumSchDoc, additional: AltiumRecord[] 
 			case "27":
 				objects.push({ kind: "wire", i, points: getSchematicIndexedPoints(r) })
 				break
+			case "26":
+				objects.push({ kind: "bus", i, points: getSchematicIndexedPoints(r) })
+				break
+			case "37":
+				objects.push({
+					kind: "busEntry",
+					i,
+					points: [location(r), { x: getSchematicCoordinate(r, { key: "CORNER.X" }), y: getSchematicCoordinate(r, { key: "CORNER.Y" }) }],
+				})
+				break
 			case "25":
 				objects.push({ kind: "label", i, name: r.getDecoded("TEXT") ?? "", at: location(r) })
 				break

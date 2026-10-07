@@ -2,7 +2,7 @@ import { expect, test } from "vitest"
 import type { CompiledNet, CompiledProject } from "../model/compile"
 import type { HierarchyNode } from "../model/hierarchy"
 import type { SheetData } from "../model/schematic-data"
-import { buildPortMenu, classifyClick, instanceLabel, jumpObjects } from "./interaction"
+import { buildPortMenu, classifyClick, highlightObjects, instanceLabel, jumpObjects } from "./interaction"
 
 const node = (id: string, fileName: string, designator: string | null, channel: number | null, children: HierarchyNode[] = []): HierarchyNode => ({
 	id,
@@ -36,7 +36,14 @@ const net = (instances: string[]): CompiledNet => ({
 	pins: [],
 	occurrences: instances.map(instanceId => ({ instanceId, objects: [1, 7] })),
 })
-const compiled: CompiledProject = { nets: [net(["Top"])], components: [], netAt: { Top: { 1: 0, 7: 0 } } }
+const compiled: CompiledProject = {
+	nets: [net(["Top"])],
+	components: [],
+	netAt: { Top: { 1: 0, 7: 0 } },
+	bundles: [{ id: 0, kind: "bus", name: "D[0..1]", occurrences: [{ instanceId: "Top", objects: [20, 21] }], nets: [0] }],
+	bundleAt: { Top: { 20: 0, 21: 0 } },
+	netBundles: { 0: [0] },
+}
 
 test("clicks map to nets, components, the port menu and child sheets", () => {
 	expect(classifyClick({ i: 1, k: "27", o: null }, top, sheet, compiled)).toEqual({ kind: "net", netId: 0 })
@@ -45,6 +52,8 @@ test("clicks map to nets, components, the port menu and child sheets", () => {
 	expect(classifyClick({ i: 9, k: "32", o: 6 }, top, sheet, compiled)).toEqual({ kind: "symbol", childId: "Top/U_ESC1", symbolI: 6 })
 	expect(classifyClick({ i: 6, k: "15", o: null }, top, sheet, compiled)).toMatchObject({ kind: "symbol", symbolI: 6 })
 	expect(classifyClick({ i: 9, k: "13", o: null }, top, sheet, compiled)).toBeNull()
+	expect(classifyClick({ i: 20, k: "26", o: null }, top, sheet, compiled)).toEqual({ kind: "bundle", bundleId: 0 })
+	expect(classifyClick({ i: 21, k: "18", o: null }, top, sheet, compiled)).toEqual({ kind: "bundle", bundleId: 0 })
 })
 
 test("the port menu groups REPEAT channels and opens the branch holding the current sheet", () => {
@@ -71,4 +80,10 @@ test("jumping frames the ports and sheet entries of the net, else all its object
 test("connectivity rows name instances without the extension", () => {
 	expect(instanceLabel(mcu(1))).toBe("ESC_MCU(U_ESC_MCU1)")
 	expect(instanceLabel(top)).toBe("Top(Top)")
+})
+
+test("a net lights the buses carrying it; a bus lights every net it carries", () => {
+	expect(highlightObjects(compiled, "Top", { kind: "net", netId: 0 })).toEqual([1, 7, 20, 21])
+	expect(highlightObjects(compiled, "Top", { kind: "bundle", bundleId: 0 })).toEqual([1, 7, 20, 21])
+	expect(highlightObjects(compiled, "Elsewhere", { kind: "net", netId: 0 })).toBeNull()
 })

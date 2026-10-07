@@ -3,6 +3,8 @@
 // - ports join the parent sheet symbol's entry of the same name (hierarchical net scope);
 // - power ports (and hidden power pins) join globally by name;
 // - signal harness members join across levels by entry name;
+// - bus ports join the parent's bus entries like ports do, and bus members join element by element
+//   in range order (position k of "PWM[1..4]" on one side is position k on the other);
 // - each REPEAT channel instance gets its own copies of the nets that live inside it.
 // Naming follows Altium: power port names first, then the highest-level net label, then the
 // highest-level port, then the harness ("<harness>.<member>"), else "Net<designator>_<pin>".
@@ -50,10 +52,22 @@ export interface CompiledComponent {
 	kind?: number
 }
 
+// A bus or signal harness, joined across sheets: its own graphics and the nets it carries.
+export interface CompiledBundle {
+	id: number
+	kind: "bus" | "harness"
+	name: string
+	occurrences: NetOccurrence[] // its bus lines / harness wires, connectors, labels, ports, entries
+	nets: number[] // member nets
+}
+
 export interface CompiledProject {
 	nets: CompiledNet[]
 	components: CompiledComponent[]
 	netAt: Record<string, Record<number, number>> // instance id -> object i -> net id
+	bundles: CompiledBundle[]
+	bundleAt: Record<string, Record<number, number>> // instance id -> object i -> bundle id
+	netBundles: Record<number, number[]> // net id -> the bundles carrying it
 }
 
 export interface CompileInput {
@@ -113,6 +127,7 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 	const byId = new Map(instances.map(inst => [inst.id, inst]))
 	const depth = (inst: CompileInstance): number => (inst.parentId ? 1 + depth(byId.get(inst.parentId)!) : 0)
 	const netKey = (inst: string, id: number) => `${inst}#${id}`
+	const busKey = (inst: string, id: number) => `bus:${inst}#${id}`
 	const nets = new Union()
 	const bundles = new Union()
 
@@ -168,6 +183,49 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 				for (const ph of pc.harnesses)
 					if (ph.entries.some(e => e.symbol === symbol.i && e.name.toUpperCase() === port.toUpperCase()))
 						bundles.union(netKey(child.id, ch.id), netKey(parent.id, ph.id))
+		for (const cb of cc.buses)
+			for (const port of cb.ports)
+				for (const pb of pc.buses)
+					if (pb.entries.some(e => e.symbol === symbol.i && e.name.toUpperCase() === port.toUpperCase()))
+						bundles.union(busKey(child.id, cb.id), busKey(parent.id, pb.id))
+	}
+
+	// Every bus and harness as one object: its graphics on each sheet and the nets it carries.
+	interface BundleDraft {
+		kind: "bus" | "harness"
+		occurrences: NetOccurrence[]
+		netKeys: string[]
+		name: { name: string; depth: number; rank: number } | null
+	}
+	const bundleDrafts = new Map<string, BundleDraft>()
+	const bundleDraft = (root: string, kind: "bus" | "harness") => {
+		let draft = bundleDrafts.get(root)
+		if (!draft) bundleDrafts.set(root, (draft = { kind, occurrences: [], netKeys: [], name: null }))
+		return draft
+	}
+
+	// Bus members: within each unified bus, the nets at the same position are one net.
+	const busMembers = new Map<string, string>() // `${bus root}|${position}` -> first net key
+	for (const inst of instances) {
+		const c = connectivityOf(inst.docPath)
+		const d = depth(inst)
+		for (const b of c.buses) {
+			const root = bundles.find(busKey(inst.id, b.id))
+			const draft = bundleDraft(root, "bus")
+			draft.occurrences.push({ instanceId: inst.id, objects: b.objects })
+			// A label on the bus names it; otherwise its ports/entries do. Highest level wins.
+			for (const { name, rank } of [...b.labels.map(name => ({ name, rank: 0 })), ...[...b.ports, ...b.entries.map(e => e.name)].map(name => ({ name, rank: 1 }))])
+				if (!draft.name || d < draft.name.depth || (d === draft.name.depth && rank < draft.name.rank)) draft.name = { name, depth: d, rank }
+			for (const [position, ids] of b.members)
+				for (const id of ids) {
+					const k = netKey(inst.id, id)
+					draft.netKeys.push(k)
+					const slot = `${root}|${position}`
+					const first = busMembers.get(slot)
+					if (first) nets.union(first, k)
+					else busMembers.set(slot, k)
+				}
+		}
 	}
 
 	// Harness members: within each unified bundle, entries with the same name are one net.
@@ -194,6 +252,7 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 				if (!best || d < best.depth || (d === best.depth && rank < best.rank)) bundleName.set(root, { name, depth: d, rank })
 			}
 			for (const [member, netId] of h.members) joinMember(root, member, netKey(inst.id, netId))
+			bundleDraft(root, "harness").occurrences.push({ instanceId: inst.id, objects: h.objects })
 		}
 	}
 	// "BUNDLE.MEMBER" net labels join that member of the harness named BUNDLE on the same sheet.
@@ -303,5 +362,18 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 
 	const netAt: Record<string, Record<number, number>> = {}
 	for (const { inst, i, root } of netAtKeys) (netAt[inst] ??= {})[i] = idOfRoot.get(root)!
-	return { nets: result, components, netAt }
+
+	const bundleList: CompiledBundle[] = []
+	const bundleAt: Record<string, Record<number, number>> = {}
+	const netBundles: Record<number, number[]> = {}
+	for (const [k, m] of memberOf) bundleDrafts.get(m.bundle)?.netKeys.push(k)
+	for (const [root, draft] of bundleDrafts) {
+		const id = bundleList.length
+		const name = draft.kind === "harness" ? (bundleName.get(root)?.name ?? "Harness") : (draft.name?.name ?? "Bus")
+		const members = [...new Set(draft.netKeys.map(k => idOfRoot.get(nets.find(k))).filter((n): n is number => n !== undefined))].sort((a, b) => a - b)
+		bundleList.push({ id, kind: draft.kind, name, occurrences: draft.occurrences, nets: members })
+		for (const o of draft.occurrences) for (const i of o.objects) (bundleAt[o.instanceId] ??= {})[i] = id
+		for (const n of members) (netBundles[n] ??= []).push(id)
+	}
+	return { nets: result, components, netAt, bundles: bundleList, bundleAt, netBundles }
 }

@@ -32,9 +32,14 @@ export function createScene(svg: SVGSVGElement): Scene | null {
 	const byIndex = new Map<number, SVGGElement>()
 	for (const g of content.querySelectorAll<SVGGElement>("g[data-i]")) byIndex.set(Number(g.dataset.i), g)
 
-	// Wires and pins are hairlines; give them a few pixels of invisible stroke to click on.
-	for (const g of content.querySelectorAll<SVGGElement>('g[data-k="27"], g[data-k="2"], g[data-k="218"], g[data-k="26"]'))
-		for (const line of [...g.querySelectorAll("polyline, line, path")]) {
+	// Wires and pins are hairlines. Each carries its drawn width as --w and colour as --c (the selected
+	// net's glow), and gets an invisible hit stroke exactly as wide as its hovered highlight
+	// (app.css --net-hover-width): what lights up is what was hit.
+	for (const g of content.querySelectorAll<SVGGElement>('g[data-k="27"], g[data-k="2"], g[data-k="218"], g[data-k="26"], g[data-k="37"]'))
+		for (const line of [...g.querySelectorAll<SVGElement>("polyline, line, path")]) {
+			line.style.setProperty("--w", line.getAttribute("stroke-width") ?? "1")
+			line.style.setProperty("--c", line.getAttribute("stroke") ?? "#000080")
+			line.classList.add("net-line")
 			const hit = line.cloneNode(false) as SVGElement
 			hit.setAttribute("class", "hit")
 			hit.removeAttribute("stroke-width")
@@ -153,8 +158,8 @@ export interface OverlayState {
 	diff?: { indices: number[]; tone: "removed" | "added" } | null // compare: objects only in this commit
 }
 
-// Net objects framed with a lilac box rather than a halo.
-const BOXED_KINDS = new Set(["25", "17", "18", "16"])
+// Net objects framed with a lilac box rather than a halo (labels, power ports, ports, entries, harness connectors).
+const BOXED_KINDS = new Set(["25", "17", "18", "16", "215"])
 
 export function paintOverlay(scene: Scene, state: OverlayState) {
 	const { overlay } = scene

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ChevronDown, ChevronRight, X } from "lucide-react"
 import { useAppStore, type Selection, type ViewTab } from "../app/store"
-import type { CompiledComponent, CompiledNet, CompiledProject } from "../model/compile"
+import type { CompiledBundle, CompiledComponent, CompiledNet, CompiledProject } from "../model/compile"
 import { flattenHierarchy, type HierarchyNode } from "../model/hierarchy"
 import type { ProjectSummary } from "../model/load-project"
 import type { PcbData } from "../parse/extract-pcb"
@@ -32,6 +32,10 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 		case "net": {
 			const net = data.compiled.nets[selection.netId]
 			return net ? <NetPanel {...views} pcb={data.pcb} net={net} selection={selection} onClose={close} /> : null
+		}
+		case "bundle": {
+			const bundle = data.compiled.bundles[selection.bundleId]
+			return bundle ? <BundlePanel {...views} bundle={bundle} selection={selection} onClose={close} /> : null
 		}
 		case "component": {
 			const component = data.compiled.components.find(c => c.id === selection.id)
@@ -166,6 +170,48 @@ function NetPanel({ tab, project, compiled, activeSheetId, pcb, net, selection, 
 				))}
 			</Section>
 			<LayersUsed pcb={pcb} name={net.physicalName} />
+		</aside>
+	)
+}
+
+// A bus or signal harness: where it runs and the nets it carries (each one selectable).
+function BundlePanel({ tab, project, compiled, activeSheetId, bundle, selection, onClose }: Views & {
+	bundle: CompiledBundle
+	selection: Selection
+	onClose(): void
+}) {
+	const nodes = flattenHierarchy(project.hierarchy).filter(n => bundle.occurrences.some(o => o.instanceId === n.id))
+	const jump = (node: HierarchyNode) => {
+		const objects = bundle.occurrences.find(o => o.instanceId === node.id)?.objects ?? []
+		useAppStore.getState().jumpTo(node.id, objects, selection)
+	}
+	const current = (n: HierarchyNode) => tab === "sch" && n.id === activeSheetId
+	const members = bundle.nets.map(id => compiled.nets[id]).filter((n): n is CompiledNet => n !== undefined)
+	return (
+		<aside className="inspector" aria-label={bundle.kind === "bus" ? "Bus properties" : "Harness properties"}>
+			<Head title={bundle.name} onClose={onClose} views={["SCH"]} active={tabLabel(tab)} />
+			<dl className="inspector-props">
+				<dt>Type</dt>
+				<dd>{bundle.kind === "bus" ? "Bus" : "Signal Harness"}</dd>
+				<dt>Nets</dt>
+				<dd>{members.length}</dd>
+			</dl>
+			<Section title="Connectivity">
+				{nodes.map(n => (
+					<div key={n.id} className={`inspector-row link${current(n) ? " current" : ""}`} onClick={() => jump(n)}>
+						<span className="tree-icon sch" />
+						<span className="grow">{instanceLabel(n)}</span>
+						{current(n) && <Check size={14} className="tick" />}
+					</div>
+				))}
+			</Section>
+			<Section title="Nets">
+				{members.map(net => (
+					<div key={net.id} className="inspector-row link" onClick={() => useAppStore.getState().select({ kind: "net", netId: net.id })}>
+						<span className="grow">{net.physicalName}</span>
+					</div>
+				))}
+			</Section>
 		</aside>
 	)
 }
