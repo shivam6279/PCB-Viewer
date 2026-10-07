@@ -30,8 +30,9 @@ export function geometryOf(m: GeoMesh): THREE.BufferGeometry {
 export function buildBoardLayers(meshes: GeoMesh[], c: Board3dColors, dimmer: Dimmer): BoardLayers {
 	const phong = (color: Rgb, extra: THREE.MeshPhongMaterialParameters = {}) => dimmable(new THREE.MeshPhongMaterial({ color: srgb(color), specular: 0x000000, ...extra }), dimmer)
 	const copper = phong(c.copper)
-	// Little light gets down a real hole: its plating reads dark from above.
-	const barrel = phong(mix(c.copper, [0, 0, 0], 0.55), { side: THREE.DoubleSide })
+	// The plating in a hole is the same copper as the pads around it: unlit, in the copper colour, only
+	// shaded round the wall (barrelShade) so it reads as a tube.
+	const barrel = dimmable(new THREE.MeshBasicMaterial({ color: srgb(c.copper), vertexColors: true, side: THREE.DoubleSide }), dimmer)
 	// The board's edge: each dielectric translucent at its configured opacity (core 0.85, prepreg 0.5
 	// over the core colour), so the copper planes inside show through the edge.
 	const band = (color: Rgb, opacity: number) => phong(color, { side: THREE.DoubleSide, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 })
@@ -69,13 +70,32 @@ export function buildBoardLayers(meshes: GeoMesh[], c: Board3dColors, dimmer: Di
 				material = m.layer === "TOPOVERLAY" ? silkTop : silkBottom
 				break
 		}
-		const mesh = new THREE.Mesh(geometryOf(m), material)
+		const geometry = geometryOf(m)
+		if (m.role === "barrel") barrelShade(geometry)
+		const mesh = new THREE.Mesh(geometry, material)
 		mesh.userData = { role: m.role, layer: m.layer, kind: m.kind }
 		mesh.matrixAutoUpdate = false
 		group.add(mesh)
 		out.push(mesh)
 	}
 	return { group, meshes: out, materials: [copper, barrel, core, prepreg, npth, surfaceTop, surfaceBottom, maskTop, maskBottom, silkTop, silkBottom] }
+}
+
+// Light on a barrel wall from one side across the hole (the side the board's brighter side light comes
+// from): the wall facing it a little brighter than the copper, the wall facing away a little darker.
+// Gentle both ways: the plating stays the copper colour, never a darker brown.
+const BARREL_LIGHT = new THREE.Vector2(1, 0.6).normalize()
+const BARREL_SPREAD = 0.3
+
+function barrelShade(g: THREE.BufferGeometry) {
+	const n = g.getAttribute("normal") as THREE.BufferAttribute
+	const colors = new Float32Array(n.count * 3)
+	for (let i = 0; i < n.count; i++) {
+		// The normal points into the hole, away from the wall: the wall faces the light when it does.
+		const s = 1 + BARREL_SPREAD * (n.getX(i) * BARREL_LIGHT.x + n.getY(i) * BARREL_LIGHT.y)
+		colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = s
+	}
+	g.setAttribute("color", new THREE.BufferAttribute(colors, 3))
 }
 
 // A selection's copper (buildHighlightGeometry) in the copper colour, never dimmed. A net or a single

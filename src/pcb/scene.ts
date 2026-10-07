@@ -20,7 +20,7 @@ export interface PadInfo {
 	plated: boolean
 	smd: boolean
 	holeSize: number // mils, 0 for SMD
-	shape: string // Round | Rectangular | Rounded Rectangle | Octagonal
+	shape: string // Round | Rectangular | Rounded Rectangle | Octagonal | Custom
 	sizeX: number // mils
 	sizeY: number
 	rotation: number
@@ -60,10 +60,12 @@ export interface PcbSceneComponent {
 	side: "top" | "bottom"
 	objects: number[] // object ids it owns
 	bbox: [number, number, number, number] // everything it owns but text, for framing
-	// The box drawn on hover/selection and picked by: the extent of everything the
-	// footprint owns except text (pads, silkscreen, courtyard/mechanical, body). On an 0805 the
-	// box sits 12.8 / 10.8 mil outside the pads = the silkscreen outline.
-	outline: [number, number, number, number]
+	// The box drawn on hover/selection and picked by: the extent of everything the footprint owns
+	// except text (pads, silkscreen, courtyard/mechanical, body), measured in the footprint's own
+	// frame (as placed at 0°) and turned with it: four corners, x,y each. On an 0805 the box sits
+	// 12.8 / 10.8 mil outside the pads = the silkscreen outline.
+	box: number[]
+	outline: [number, number, number, number] // the box's axis-aligned extent
 }
 
 export interface PcbScene {
@@ -111,6 +113,7 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 		side: c.get?.("LAYER") === "BOTTOM" ? "bottom" : "top",
 		objects: [],
 		bbox: [Infinity, Infinity, -Infinity, -Infinity],
+		box: [],
 		outline: [Infinity, Infinity, -Infinity, -Infinity],
 	}))
 
@@ -148,9 +151,18 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 		const rot = Number(f.get("ROTATION")) || 0
 		add({ kind: "fill", layer: layerFor(f), net: netOf(f), component: componentOf(f), prims: [rectPoly((x1 + x2) / 2, (y1 + y2) / 2, Math.abs(x2 - x1), Math.abs(y2 - y1), rot, 0)], at: [(x1 + x2) / 2, (y1 + y2) / 2] })
 	}
+	// Custom-shaped pads: the pad record holds a placeholder (1 mil round) and the copper is a region
+	// tied to it by its position in the pad list, counted from 1 (PADINDEX; on every corpus board the
+	// region's net is that pad's). That region is the pad's shape.
+	const padShapes = new Map<number, Prim[]>()
 	for (const r of d.regions as any[]) {
 		if (Number(r.get("KIND") ?? 0) !== 0) continue // polygon / board cutouts are not drawn
 		const prim = regionPrim(r)
+		const padIndex = Number.parseInt(r.get("PADINDEX") ?? "", 10)
+		if (Number.isInteger(padIndex) && padIndex > 0 && padIndex !== NO_INDEX) {
+			if (prim) padShapes.set(padIndex - 1, [...(padShapes.get(padIndex - 1) ?? []), prim])
+			continue
+		}
 		const polygon = Number(r.get("POLYGON"))
 		const pour = Number.isInteger(polygon) && polygon !== NO_INDEX
 		// A pour's region carries no net of its own; the polygon has it.
@@ -167,7 +179,7 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 		const span: [string, string] = [copperKey(v.get("STARTLAYER") ?? "TOP"), copperKey(v.get("ENDLAYER") ?? "BOTTOM")]
 		add({ kind: "via", layer: "MULTILAYER", span, net: netOf(v), component: null, prims: [{ t: "circle", x, y, r: dia / 2 }], holes: [{ t: "circle", x, y, r: hole / 2 }], at: [x, y], width: dia, pad: { name: "", plated: true, smd: false, holeSize: hole, shape: "Round", sizeX: dia, sizeY: dia, rotation: 0 }, mask: maskOpening(v, maskRules.via) })
 	}
-	for (const p of d.pads as any[]) addPad(p)
+	;(d.pads as any[]).forEach((p, k) => addPad(p, padShapes.get(k)))
 
 	for (const t of d.texts as any[]) {
 		const component = componentOf(t)
@@ -200,10 +212,14 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 	let bounds = boxOfRing(outline)
 	if (!Number.isFinite(bounds[0])) bounds = objects.reduce((b, o) => unionBox(b, o.bbox), [Infinity, Infinity, -Infinity, -Infinity] as PcbObject["bbox"])
 
-	for (const c of components) c.outline = c.bbox
+	for (const c of components) {
+		const prims = c.objects.flatMap(id => (objects[id]!.kind === "text" ? [] : objects[id]!.prims))
+		c.box = rotatedBox(prims, c.x, c.y, c.rotation) ?? cornersOf(c.bbox)
+		c.outline = boxOfRing(c.box)
+	}
 	return { origin, bounds, outline, cutouts, layers: buildLayers(layerKeys, boardItems), objects, components }
 
-	function addPad(p: any) {
+	function addPad(p: any, custom?: Prim[]) {
 		const x = mils(p.get("X")), y = mils(p.get("Y"))
 		const layer: string = p.get("LAYER") ?? "TOP"
 		const rot = Number(p.get("ROTATION")) || 0
@@ -214,6 +230,7 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 		const radiusPct = Number(p.get("LAYER0CORNERRADIUS") ?? 0)
 		const shape = alt === "ROUNDRECT" && shapeName === "ROUND" && radiusPct < 100 ? "ROUNDRECT" : shapeName
 		const prim = padPrim(shape, x, y, sizeX, sizeY, rot, (Math.min(sizeX, sizeY) / 2) * (radiusPct / 100))
+		const customBox = custom ? primsBox(custom) : null
 		const holes: Prim[] = []
 		if (hole > 0) {
 			const slot = mils(p.get("SLOTLENGTH"))
@@ -230,7 +247,7 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 			layer,
 			net: netOf(p),
 			component: componentOf(p),
-			prims: [prim],
+			prims: custom ?? [prim],
 			holes,
 			at: [x, y],
 			pad: {
@@ -238,9 +255,9 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 				plated: p.get("PLATED") !== "FALSE",
 				smd: hole === 0,
 				holeSize: hole,
-				shape: shape === "RECTANGLE" ? "Rectangular" : shape === "ROUNDRECT" ? "Rounded Rectangle" : shape.startsWith("OCTAGON") ? "Octagonal" : "Round",
-				sizeX,
-				sizeY,
+				shape: custom ? "Custom" : shape === "RECTANGLE" ? "Rectangular" : shape === "ROUNDRECT" ? "Rounded Rectangle" : shape.startsWith("OCTAGON") ? "Octagonal" : "Round",
+				sizeX: customBox ? customBox[2] - customBox[0] : sizeX,
+				sizeY: customBox ? customBox[3] - customBox[1] : sizeY,
 				rotation: rot,
 			},
 		})
@@ -429,6 +446,57 @@ export function primsBox(prims: Prim[]): [number, number, number, number] {
 	}
 	return b
 }
+
+// The extent of some shapes in a frame turned by `deg` about (cx, cy), as the four corners of that
+// rectangle back in board coordinates (null: nothing to measure). Strokes keep their width; arcs are
+// measured along their sweep.
+export function rotatedBox(prims: Prim[], cx: number, cy: number, deg: number): number[] | null {
+	const a = (deg * Math.PI) / 180
+	const cos = Math.cos(a), sin = Math.sin(a)
+	let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity
+	const grow = (x: number, y: number, r: number) => {
+		const dx = x - cx, dy = y - cy
+		const u = dx * cos + dy * sin, v = -dx * sin + dy * cos
+		u0 = Math.min(u0, u - r)
+		v0 = Math.min(v0, v - r)
+		u1 = Math.max(u1, u + r)
+		v1 = Math.max(v1, v + r)
+	}
+	for (const p of prims) {
+		if (p.t === "seg") {
+			grow(p.x1, p.y1, p.w / 2)
+			grow(p.x2, p.y2, p.w / 2)
+		} else if (p.t === "arc") {
+			const sweep = ((((p.a1 - p.a0) % 360) + 360) % 360) || 360
+			const steps = Math.max(2, Math.ceil(sweep / 10))
+			for (let k = 0; k <= steps; k++) {
+				const t = ((p.a0 + (sweep * k) / steps) * Math.PI) / 180
+				grow(p.x + p.r * Math.cos(t), p.y + p.r * Math.sin(t), p.w / 2)
+			}
+		} else if (p.t === "circle") grow(p.x, p.y, p.r)
+		else if (p.t === "poly") for (const ring of p.rings) for (let k = 0; k + 1 < ring.length; k += 2) grow(ring[k]!, ring[k + 1]!, 0)
+	}
+	if (!Number.isFinite(u0)) return null
+	const back = (u: number, v: number) => [cx + u * cos - v * sin, cy + u * sin + v * cos]
+	return [...back(u0, v0), ...back(u1, v0), ...back(u1, v1), ...back(u0, v1)]
+}
+
+export const cornersOf = ([x0, y0, x1, y1]: [number, number, number, number]) => [x0, y0, x1, y0, x1, y1, x0, y1]
+
+// Whether a point is inside a (convex) box of four corners, and the box's area.
+export function boxContains(box: number[], x: number, y: number): boolean {
+	let sign = 0
+	for (let k = 0; k < 4; k++) {
+		const ax = box[k * 2]!, ay = box[k * 2 + 1]!, bx = box[((k + 1) % 4) * 2]!, by = box[((k + 1) % 4) * 2 + 1]!
+		const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+		if (cross === 0) continue
+		if (sign === 0) sign = Math.sign(cross)
+		else if (Math.sign(cross) !== sign) return false
+	}
+	return true
+}
+
+export const boxArea = (box: number[]) => Math.hypot(box[2]! - box[0]!, box[3]! - box[1]!) * Math.hypot(box[4]! - box[2]!, box[5]! - box[3]!)
 
 function boxOfRing(ring: number[]): [number, number, number, number] {
 	return primsBox(ring.length ? [{ t: "poly", rings: [ring] }] : [])

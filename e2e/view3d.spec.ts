@@ -58,15 +58,18 @@ test("clicking a part selects it: the rest goes grey and the inspector opens", a
 
 test("Objects panel: Bottom turns the board over, 3D Body hides the parts", async ({ page }) => {
 	await openCubli3d(page)
-	await page.getByRole("button", { name: "Objects", exact: true }).click()
-	await page.getByRole("button", { name: "Bottom", exact: true }).click()
-	await page.getByRole("button", { name: "Close" }).click()
+	// The PCB view's own panel (also Top / Bottom / Objects) stays mounted behind: look in this one.
+	const toggle = page.locator(".docbar-tool", { hasText: "Objects" })
+	const panel = page.getByRole("complementary", { name: "Objects", exact: true })
+	await toggle.click()
+	await panel.getByRole("button", { name: "Bottom", exact: true }).click()
+	await panel.getByRole("button", { name: "Close" }).click()
 	await page.waitForTimeout(300)
 	await shot(page, "3d-bottom")
-	await page.getByRole("button", { name: "Objects", exact: true }).click()
-	await page.getByRole("button", { name: "Top", exact: true }).click()
-	await page.locator('[data-kind="body"]').hover()
-	await page.getByRole("button", { name: "Hide 3D Body" }).click()
+	await toggle.click()
+	await panel.getByRole("button", { name: "Top", exact: true }).click()
+	await panel.locator('[data-kind="body"]').hover()
+	await panel.getByRole("button", { name: "Hide 3D Body" }).click()
 	await page.waitForTimeout(300)
 	await shot(page, "3d-no-bodies")
 })
@@ -116,4 +119,112 @@ test("turning pivots on the middle of the screen, on the board, wherever the vie
 	}, pivot)
 	expect(Math.abs(ndc.x)).toBeLessThan(0.01)
 	expect(Math.abs(ndc.y)).toBeLessThan(0.01)
+})
+
+test("Orthographic keeps parallel edges parallel, and zoom and picking still follow the cursor", async ({ page }) => {
+	const errors: string[] = []
+	page.on("pageerror", e => errors.push(e.message))
+	await openCubli3d(page)
+	const canvas = (await page.locator(".view3d-canvas").boundingBox())!
+	const cx = canvas.x + canvas.width / 2, cy = canvas.y + canvas.height / 2
+	// The board's outline corners on screen; in a parallel projection opposite edges stay equal.
+	const skew = () =>
+		page.evaluate(() => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			const [x0, y0, x1, y1] = e.scene.bounds
+			const [a, b, c, d] = [e.toClient(x0, y0), e.toClient(x1, y0), e.toClient(x1, y1), e.toClient(x0, y1)]
+			const len = (p: any, q: any) => Math.hypot(p.x - q.x, p.y - q.y)
+			return Math.max(Math.abs(len(a, b) - len(d, c)) / len(a, b), Math.abs(len(a, d) - len(b, c)) / len(a, d))
+		})
+	const turn = async () => {
+		await page.mouse.move(cx, cy)
+		await page.mouse.down()
+		await page.mouse.move(cx + 60, cy - 120, { steps: 10 })
+		await page.mouse.up()
+		await page.waitForTimeout(200)
+	}
+	await turn()
+	expect(await skew()).toBeGreaterThan(0.02) // perspective: the far edge is shorter
+	await shot(page, "3d-perspective")
+
+	const projection = {
+		selectOption: (id: "perspective" | "orthographic") => page.getByRole("radio", { name: id === "perspective" ? "Perspective" : "Orthographic" }).click(),
+	}
+	await projection.selectOption("orthographic")
+	await page.waitForTimeout(200)
+	expect(await skew()).toBeLessThan(0.001)
+	await shot(page, "3d-orthographic")
+
+	// Zooming towards a part keeps the point under the cursor in place: everything else scales about
+	// it. (The cursor lands on whole pixels, so the part itself drifts by its sub-pixel offset times
+	// the zoom.)
+	// (The zoom is the view height.)
+	const zoom = () => page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.camera.top)
+	const before = await clientOfComponent(page, "U13_ESC")
+	const m = { x: Math.round(before.x), y: Math.round(before.y) }
+	const h0 = await zoom()
+	await page.mouse.move(m.x, m.y)
+	for (let i = 0; i < 3; i++) await page.mouse.wheel(0, -300)
+	await page.waitForTimeout(200)
+	const scale = h0 / (await zoom())
+	expect(scale).toBeGreaterThan(2)
+	const after = await clientOfComponent(page, "U13_ESC")
+	expect(Math.hypot(after.x - m.x - (before.x - m.x) * scale, after.y - m.y - (before.y - m.y) * scale)).toBeLessThan(0.5)
+	await shot(page, "3d-orthographic-zoomed")
+
+	// A click picks the part under it, turned and zoomed in.
+	await page.mouse.click(after.x, after.y)
+	await expect(page.locator(".inspector")).toContainText("U13_ESC")
+	await page.keyboard.press("Escape")
+
+	// Zoomed in away from the board centre: panning and turning never change the zoom, and turns are
+	// about the board point in the middle of the screen.
+	const state = () =>
+		page.evaluate(() => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			e.render()
+			const p = e.rotationPivot().project(e.camera)
+			return { half: e.camera.top, x: p.x, y: p.y, pivot: e.rotationPivot().toArray() }
+		})
+	const drag = async (button: "left" | "right", dx: number, dy: number) => {
+		await page.mouse.move(cx, cy)
+		await page.mouse.down({ button })
+		await page.mouse.move(cx + dx, cy + dy, { steps: 10 })
+		await page.mouse.up({ button })
+		await page.waitForTimeout(100)
+	}
+	const s0 = await state()
+	expect(Math.hypot(s0.pivot[0], s0.pivot[1])).toBeGreaterThan(5)
+	for (const [button, dx, dy] of [["right", 300, 150], ["left", -150, 80], ["right", -400, -200], ["left", 200, 120], ["right", 250, -100]] as const) {
+		await drag(button, dx, dy)
+		const s1 = await state()
+		expect(Math.abs(s1.half / s0.half - 1)).toBeLessThan(1e-6)
+		expect(Math.abs(s1.x)).toBeLessThan(0.01)
+		expect(Math.abs(s1.y)).toBeLessThan(0.01)
+	}
+	await shot(page, "3d-orthographic-turned")
+
+	// Switching projection keeps the point in the middle of the screen and its size there.
+	const spot = () => clientOfComponent(page, "U13_ESC")
+	const at0 = await spot()
+	const pivotPx = async () => {
+		const st = await state()
+		return { x: canvas.x + ((st.x + 1) / 2) * canvas.width, y: canvas.y + ((1 - st.y) / 2) * canvas.height }
+	}
+	const c0 = await pivotPx()
+	await projection.selectOption("perspective")
+	await page.waitForTimeout(200)
+	const c1 = await pivotPx()
+	expect(Math.hypot(c1.x - c0.x, c1.y - c0.y)).toBeLessThan(0.5)
+	await projection.selectOption("orthographic")
+	await page.waitForTimeout(200)
+	const at2 = await spot()
+	expect(Math.hypot(at2.x - at0.x, at2.y - at0.y)).toBeLessThan(0.5)
+	expect(Math.abs((await state()).half / s0.half - 1)).toBeLessThan(1e-6)
+
+	// The choice is remembered.
+	await page.reload()
+	await openCubli3d(page)
+	await expect(page.getByRole("radio", { name: "Orthographic" })).toHaveAttribute("aria-checked", "true")
+	expect(errors).toEqual([])
 })

@@ -10,6 +10,7 @@ import { pcbScene } from "../pcb/use-scene"
 import { loadSheet, SchematicView } from "../sch/SchematicView"
 import type { ProjectSource } from "../source/types"
 import { loadView3d } from "./ViewArea"
+import { BomView } from "../bom/BomView"
 
 const View3d = lazy(loadView3d)
 
@@ -47,7 +48,7 @@ export function DiffArea({ tab, activeSheetId, activePcbPath, a, b, files }: {
 	const pcbChange = pcbA ? files?.get(pcbA.path) : pcbB ? files?.get(pcbB.path) : undefined
 	const schMarks = useSchMarks(tab === "sch" ? a : null, nodeA, b, nodeB, schChange)
 	const pcbMarks = usePcbMarks(tab === "pcb" ? a : null, b, pcbChange)
-	const marks = tab === "sch" ? schMarks : tab === "pcb" ? pcbMarks : { a: null, b: null, note: "3D: side by side (differences are marked in SCH and PCB)" }
+	const marks = tab === "sch" ? schMarks : tab === "pcb" ? pcbMarks : { a: null, b: null, note: `${tab === "bom" ? "BOM" : "3D"}: side by side (differences are marked in SCH and PCB)` }
 
 	// The board's layers panel sits in a column of its own, left of both boards, covering neither.
 	const [panelHost, setPanelHost] = useState<HTMLElement | null>(null)
@@ -81,6 +82,13 @@ export function DiffArea({ tab, activeSheetId, activePcbPath, a, b, files }: {
 				<div className="diff-panel-host" ref={setPanelHost} />
 				{pane("primary", a, marks?.a ?? null, pcbA ? <PcbView key="a" parser={a.parser} /> : missing("No board in this commit"))}
 				{pane("secondary", b, marks?.b ?? null, pcbB ? <PcbView key="b" parser={b.parser} /> : missing("No board in this commit"))}
+			</section>
+		)
+	if (tab === "bom")
+		return (
+			<section className="diff-area" aria-label="BOM diff">
+				{pane("primary", a, null, <BomView projectName={a.project.name} />)}
+				{pane("secondary", b, null, <BomView projectName={b.project.name} />)}
 			</section>
 		)
 	const board = (s: DiffSide, path: string | undefined) =>

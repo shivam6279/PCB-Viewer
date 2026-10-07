@@ -4,11 +4,12 @@
 import { compileProject, type CompiledProject, type CompileInstance } from "../model/compile"
 import type { SheetData } from "../model/schematic-data"
 import { decodeText, parseAdditionalRecords, parseNetColors, parseSchDoc } from "./altium"
-import { serializeAltiumPcbToSvg, type AltiumBinaryPcbDoc } from "altiumts"
+import type { AltiumBinaryPcbDoc } from "altiumts"
 import { extractPcb, parsePcb, type PcbData } from "./extract-pcb"
 import { extractSheet } from "./extract-sheet"
 import { buildPcbScene, type PcbScene } from "../pcb/scene"
 import { netSummaries } from "../pcb/nets"
+import { boardParts, buildBom, parseBomDoc, schematicParts, type Bom } from "../bom/bom"
 
 export interface ProjectDataInput {
 	instances: CompileInstance[]
@@ -16,6 +17,7 @@ export interface ProjectDataInput {
 	sheets: [docPath: string, bytes: Uint8Array][]
 	pcb: Uint8Array | null
 	project?: Uint8Array | null // the .PrjPcb, for net colours
+	bomDoc?: { name: string; bytes: Uint8Array } | null // the project's BOM document, if it has one
 }
 
 export interface ProjectData {
@@ -27,9 +29,10 @@ export interface ProjectData {
 	// record index -> colour. A colour set on any of a net's names (12V) reaches the net under every
 	// other name it has on lower sheets (V_GATE_DRIVE).
 	wireColors: Record<string, Record<number, string>>
+	bom: Bom | null // null: no parts anywhere
 }
 
-// The last compiled project's board, kept parsed for footprint pictures.
+// The last compiled project's board, kept parsed for the PCB view's scene.
 let board: AltiumBinaryPcbDoc | null = null
 let scene: PcbScene | null = null
 
@@ -63,15 +66,22 @@ export function buildProjectData(input: ProjectDataInput): ProjectData {
 		designatorFormat: input.designatorFormat,
 		padNets: pcb ? new Map(pcb.padNets) : undefined,
 	})
-	return { compiled, sheets: Object.fromEntries(sheets), pcb, errors, wireColors: wireColors(input, compiled, sheets) }
+	return { compiled, sheets: Object.fromEntries(sheets), pcb, errors, wireColors: wireColors(input, compiled, sheets), bom: bomOf(input, compiled, pcb, errors) }
 }
 
-// A picture of one placed component's footprint (pads, copper, overlay), found by its source path.
-export function renderFootprintSvg(sourceUniqueId: string): string | null {
-	const doc = board as (AltiumBinaryPcbDoc & { components: { sourceUniqueId?: string }[] }) | null
-	const index = doc?.components.findIndex(c => c.sourceUniqueId === sourceUniqueId) ?? -1
-	if (!doc || index < 0) return null
-	return serializeAltiumPcbToSvg(doc, { componentIndices: [index], fitToContent: true, showBoardOutline: false, width: 272, backgroundColor: "#000000" })
+// The BOM from the board's parts, else the schematics', with the BOM document's items when there is one.
+function bomOf(input: ProjectDataInput, compiled: CompiledProject, pcb: PcbData | null, errors: string[]): Bom | null {
+	let doc: { name: string; items: ReturnType<typeof parseBomDoc> } | null = null
+	if (input.bomDoc) {
+		try {
+			doc = { name: input.bomDoc.name, items: parseBomDoc(decodeText(input.bomDoc.bytes)) }
+		} catch (e) {
+			errors.push(`${input.bomDoc.name}: ${e instanceof Error ? e.message : String(e)}`)
+		}
+	}
+	if (pcb && pcb.components.length > 0) return buildBom(boardParts(pcb.components, compiled), "board", doc)
+	if (compiled.components.length > 0) return buildBom(schematicParts(compiled), "schematic", doc)
+	return null
 }
 
 // The board as drawable shapes, built on first request (the PCB view) and kept.

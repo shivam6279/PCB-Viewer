@@ -8,7 +8,7 @@ import type { PcbScene } from "./scene"
 export interface PcbHighlight {
 	objects: Set<number>
 	outline: Set<number> | null
-	componentBox: [number, number, number, number] | null
+	componentBox: number[] | null // four corners
 	frame: [number, number, number, number] | null
 }
 
@@ -65,5 +65,5 @@ export function pcbHighlight(scene: PcbScene, selection: Selection | null, compi
 	const c = scene.components[index]
 	if (!c) return { objects: new Set(), outline: null, componentBox: null, frame: null }
 	// A selected part shows as a hatched green box with its pads in layer colour (no pad outline).
-	return { objects: new Set(c.objects), outline: null, componentBox: c.outline, frame: c.bbox }
+	return { objects: new Set(c.objects), outline: null, componentBox: c.box, frame: c.bbox }
 }

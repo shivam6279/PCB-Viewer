@@ -19,7 +19,6 @@ export function separateWorkerParser(): Parser & { dispose(): void } {
 		parseSheetLinks: bytes => own.parseSheetLinks(bytes),
 		renderSheetSvg: (bytes, options) => own.renderSheetSvg(bytes, options),
 		buildProjectData: input => own.buildProjectData(input),
-		renderFootprintSvg: id => own.renderFootprintSvg(id),
 		getPcbScene: () => own.getPcbScene(),
 		dispose: () => worker.terminate(),
 	}
@@ -31,7 +30,6 @@ export function workerParser(): Parser {
 		parseSheetLinks: bytes => api().parseSheetLinks(bytes),
 		renderSheetSvg: (bytes, options) => api().renderSheetSvg(bytes, options),
 		buildProjectData: input => api().buildProjectData(input),
-		renderFootprintSvg: id => api().renderFootprintSvg(id),
 		getPcbScene: () => api().getPcbScene(),
 	}
 }

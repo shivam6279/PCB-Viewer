@@ -19,7 +19,6 @@ const fakeParser: Parser = {
 	},
 	renderSheetSvg: async () => "",
 	buildProjectData: async () => { throw new Error("not used") },
-	renderFootprintSvg: async () => null,
 	getPcbScene: async () => null,
 }
 

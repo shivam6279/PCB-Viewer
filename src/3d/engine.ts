@@ -1,4 +1,4 @@
-// The 3D board view's renderer, camera and mouse handling (three.js, perspective). It opens looking
+// The 3D board view's renderer, camera and mouse handling (three.js, perspective or orthographic). It opens looking
 // straight down on the top side, fitted to the board; left-drag turns the
 // board like a trackball (the point under the drag follows the mouse); right- or middle-drag pans;
 // the wheel zooms towards the cursor. A click picks what is under it: a part (its body, or one of its
@@ -24,6 +24,7 @@ THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree
 THREE.Mesh.prototype.raycast = acceleratedRaycast
 
 export const FOV = 45 // vertical, degrees
+const TAN = Math.tan((FOV * Math.PI) / 360) // half the view height per mm of distance
 // Radians per CSS px of drag.
 const ROTATE_PER_PX = (0.4 * Math.PI) / 180
 const FIT_FILL = 0.83 // the fitted board's share of the view height
@@ -40,7 +41,12 @@ export interface CameraState {
 	distance: number
 }
 
-export type Pick = { kind: "component"; index: number } | { kind: "object"; id: number } | null
+// Orthographic: the camera's place along its own axis does not show, so the distance is free to be
+// the zoom alone: the view height is 2 · distance · tan(FOV / 2). Only the wheel changes it; panning
+// moves the offset and turning the orientation (plus the offset that keeps the pivot in the middle).
+export type Projection = "perspective" | "orthographic"
+
+export type Pick ={ kind: "component"; index: number } | { kind: "object"; id: number } | null
 
 export interface EngineEvents {
 	pick(hit: Pick): void
@@ -50,7 +56,9 @@ export interface EngineEvents {
 export class BoardEngine {
 	readonly renderer: THREE.WebGLRenderer
 	readonly frame: BoardFrame
-	readonly camera: THREE.PerspectiveCamera
+	private readonly perspective: THREE.PerspectiveCamera
+	private readonly orthographic = new THREE.OrthographicCamera()
+	private projection: Projection = "perspective"
 	private readonly world = new THREE.Scene()
 	// A net / object highlight is drawn in a second pass over a cleared depth buffer: always visible
 	// through the mask, the board and the parts, yet sorted against itself, so its holes
@@ -87,8 +95,8 @@ export class BoardEngine {
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace
 		// Every board is drawn on the same flat grey, whatever the board's own 3D workspace colour.
 		this.world.background = new THREE.Color().setRGB(200 / 255, 200 / 255, 200 / 255, THREE.SRGBColorSpace)
-		this.camera = new THREE.PerspectiveCamera(FOV, 1, 1, 10000)
-		this.world.add(this.camera)
+		this.perspective = new THREE.PerspectiveCamera(FOV, 1, 1, 10000)
+		this.world.add(this.perspective, this.orthographic)
 
 		addEvenLights(this.world)
 		addEvenLights(this.overlay)
@@ -184,7 +192,7 @@ export class BoardEngine {
 		const w = Math.max((x1 - x0) * MM, 1), h = Math.max((y1 - y0) * MM, 1)
 		const aspect = this.aspect()
 		const half = Math.max(h / 2, w / 2 / aspect) / FIT_FILL
-		const distance = half / Math.tan((this.camera.fov * Math.PI) / 360)
+		const distance = half / TAN
 		const quaternion = sideQuaternion(side)
 		// The board face sits half its thickness in front of the centre plane.
 		const centre = new THREE.Vector3(((x0 + x1) / 2 - f.cx) * MM, ((y0 + y1) / 2 - f.cy) * MM, -f.thickness / 2)
@@ -217,8 +225,24 @@ export class BoardEngine {
 		return { offset: this.view.offset.clone(), quaternion: this.view.quaternion.clone(), distance: this.view.distance }
 	}
 
-	// Top / Bottom: look straight at that side, keeping the zoom and the point in the middle (the
-	// bottom then shows slightly larger: it is a board thickness nearer).
+	// The camera drawing the view (test hook too).
+	get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+		return this.projection === "perspective" ? this.perspective : this.orthographic
+	}
+
+	// Switching keeps the picture: the board point in the middle of the screen keeps its size. Only
+	// the camera's place along its own axis changes, which orthographic does not show.
+	setProjection(projection: Projection) {
+		if (projection === this.projection) return
+		const depth = this.pivotDepth()
+		if (projection === "orthographic") this.view.distance = Math.max(depth, 0.3)
+		else this.view.distance += Math.abs(this.view.distance) - depth
+		this.projection = projection
+		this.requestRender()
+	}
+
+	// Top / Bottom: look straight at that side, keeping the zoom and the point in the middle (in
+	// perspective the bottom then shows slightly larger: it is a board thickness nearer).
 	showSide(side: "top" | "bottom") {
 		const quaternion = sideQuaternion(side)
 		this.setView({ quaternion, distance: this.view.distance, offset: this.offsetOf(this.screenCentre(), quaternion) })
@@ -233,20 +257,55 @@ export class BoardEngine {
 		const w = this.canvas.clientWidth, h = this.canvas.clientHeight
 		if (w === 0 || h === 0) return
 		this.renderer.setSize(w, h, false)
-		this.camera.aspect = w / h
+		this.perspective.aspect = w / h
 		if (this.autoFit) this.view = this.fitView(this.scene.bounds, "top")
 		this.requestRender()
 	}
 
 	private applyView() {
 		const { offset, quaternion, distance } = this.view
-		this.camera.quaternion.copy(quaternion)
-		this.camera.position.copy(new THREE.Vector3(offset.x, offset.y, distance).applyQuaternion(quaternion).add(this.centre))
-		// Near/far around the board so depth precision stays good from far out and close in.
-		this.camera.near = Math.min(Math.max(Math.abs(distance) / 500, 0.01), 1)
-		this.camera.far = Math.abs(distance) * 20 + 500
-		this.camera.updateProjectionMatrix()
-		this.camera.updateMatrixWorld()
+		if (this.projection === "perspective") {
+			const camera = this.perspective
+			camera.quaternion.copy(quaternion)
+			camera.position.copy(new THREE.Vector3(offset.x, offset.y, distance).applyQuaternion(quaternion).add(this.centre))
+			// Near/far around the board so depth precision stays good from far out and close in.
+			camera.near = Math.min(Math.max(Math.abs(distance) / 500, 0.01), 1)
+			camera.far = Math.abs(distance) * 20 + 500
+			camera.updateProjectionMatrix()
+			camera.updateMatrixWorld()
+			return
+		}
+		// The view height comes from the distance (the zoom); the camera itself stands back outside
+		// everything on the board however far in the view is zoomed, so nothing is cut by the near plane.
+		const camera = this.orthographic
+		const half = Math.abs(distance) * TAN, aspect = this.aspect()
+		const reach = this.reach()
+		const back = Math.max(Math.abs(distance), reach)
+		camera.left = -half * aspect
+		camera.right = half * aspect
+		camera.top = half
+		camera.bottom = -half
+		camera.quaternion.copy(quaternion)
+		camera.position.copy(new THREE.Vector3(offset.x, offset.y, back).applyQuaternion(quaternion).add(this.centre))
+		camera.near = Math.max(back - reach, 0.01)
+		camera.far = back + reach
+		camera.updateProjectionMatrix()
+		camera.updateMatrixWorld()
+	}
+
+	// The camera's depth to the turning pivot (the board point in the middle of the screen).
+	private pivotDepth(view = this.view) {
+		const q = view.quaternion
+		const camera = this.centre.add(new THREE.Vector3(view.offset.x, view.offset.y, view.distance).applyQuaternion(q))
+		const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
+		return pivotOf(view, this.orbitBoard(), this.projection === "orthographic").sub(camera).dot(forward)
+	}
+
+	// How far anything on the board can be from its centre (mm): the outline's half-diagonal plus room
+	// for tall parts.
+	private reach() {
+		const [x0, y0, x1, y1] = this.scene.bounds
+		return Math.hypot(x1 - x0, y1 - y0) * MM * 0.5 + 100
 	}
 
 	requestRender() {
@@ -340,7 +399,7 @@ export class BoardEngine {
 	// Where a turn pivots: the middle of the screen, on the board's mid-plane (see orbit.ts). Taken once
 	// when a drag starts, so the pivot doesn't drift while turning.
 	rotationPivot(): THREE.Vector3 {
-		return pivotOf(this.view, this.orbitBoard())
+		return pivotOf(this.view, this.orbitBoard(), this.projection === "orthographic")
 	}
 
 	// Trackball: the board turns about the view's own axes through the pivot, which stays in the middle
@@ -352,7 +411,10 @@ export class BoardEngine {
 		const r = new THREE.Quaternion()
 			.setFromAxisAngle(up, -dx * this.rotateSpeed)
 			.multiply(new THREE.Quaternion().setFromAxisAngle(right, -dy * this.rotateSpeed))
-		this.view = orbit(this.view, this.orbitBoard(), pivot, r)
+		const next = orbit(this.view, this.orbitBoard(), pivot, r)
+		// Orthographic: the turn moves the camera along its axis too, which would be a zoom here.
+		if (this.projection === "orthographic") next.distance = this.view.distance
+		this.view = next
 		this.changed()
 	}
 
@@ -363,7 +425,7 @@ export class BoardEngine {
 
 	// Panning slides the offset; its speed comes from the distance alone (the current zoom).
 	pan(dx: number, dy: number) {
-		const perPx = (2 * Math.abs(this.view.distance) * Math.tan((this.camera.fov * Math.PI) / 360)) / (this.canvas.clientHeight || 1)
+		const perPx = (2 * Math.abs(this.view.distance) * TAN) / (this.canvas.clientHeight || 1)
 		this.view.offset.x -= dx * perPx
 		this.view.offset.y += dy * perPx
 		this.changed()
@@ -371,13 +433,24 @@ export class BoardEngine {
 
 	// Zoom towards the surface under the cursor (a part, else the board, else the centre plane): the
 	// camera moves along the cursor's ray, so that point stays put, and stops short of it.
+	// Orthographic: the view height scales about the point under the cursor, which also stays put.
 	zoomAt(clientX: number, clientY: number, factor: number) {
-		const ray = this.rayAt(clientX, clientY)
 		const rect = this.canvas.getBoundingClientRect()
-		const tan = Math.tan((this.camera.fov * Math.PI) / 360)
 		// The cursor ray's slope in screen terms: a point at depth t lies at offset + slope * t.
-		const sx = (((clientX - rect.left) / rect.width) * 2 - 1) * tan * this.aspect()
-		const sy = (1 - ((clientY - rect.top) / rect.height) * 2) * tan
+		const sx = (((clientX - rect.left) / rect.width) * 2 - 1) * TAN * this.aspect()
+		const sy = (1 - ((clientY - rect.top) / rect.height) * 2) * TAN
+		if (this.projection === "orthographic") {
+			// The view height scales with the distance; the cursor's point sits at offset + slope ·
+			// distance, so shrinking the distance by `advance` moves the offset by slope · advance.
+			const d0 = Math.abs(this.view.distance)
+			const d1 = THREE.MathUtils.clamp(d0 * factor, 0.3, Math.max(d0, 5000))
+			if (d1 === d0) return
+			this.view.distance = d1
+			this.view.offset.x += sx * (d0 - d1)
+			this.view.offset.y += sy * (d0 - d1)
+			return this.changed()
+		}
+		const ray = this.rayAt(clientX, clientY)
 		const forward = this.camera.getWorldDirection(new THREE.Vector3())
 		const hit = ray.intersectObjects(this.pickable(), false)[0]?.point
 		const depth = hit ? hit.clone().sub(this.camera.position).dot(forward) : this.view.distance

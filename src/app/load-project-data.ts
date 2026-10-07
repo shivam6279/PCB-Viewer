@@ -9,10 +9,12 @@ import { useAppStore } from "./store"
 export async function buildData(source: ProjectSource, project: ProjectSummary, parser: Parser): Promise<ProjectData> {
 	const sheetDocs = project.documents.filter(d => d.kind === "sch" && d.exists)
 	const pcbDoc = project.documents.find(d => d.kind === "pcb" && d.exists)
-	const [sheets, pcb, projectFile] = await Promise.all([
+	const bomDoc = project.documents.find(d => /\.bomdoc$/i.test(d.path) && d.exists)
+	const [sheets, pcb, projectFile, bomBytes] = await Promise.all([
 		Promise.all(sheetDocs.map(async d => [d.path, await source.read(d.path)] as [string, Uint8Array])),
 		pcbDoc ? source.read(pcbDoc.path) : null,
 		project.prjPath ? source.read(project.prjPath) : null,
+		bomDoc ? source.read(bomDoc.path).catch(() => null) : null,
 	])
 	return parser.buildProjectData({
 		instances: compileInstances(project.hierarchy),
@@ -20,6 +22,7 @@ export async function buildData(source: ProjectSource, project: ProjectSummary, 
 		sheets,
 		pcb,
 		project: projectFile,
+		bomDoc: bomDoc && bomBytes ? { name: bomDoc.path.split("/").pop()!, bytes: bomBytes } : null,
 	})
 }
 

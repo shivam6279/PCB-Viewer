@@ -16,10 +16,11 @@ export interface PcbDrawState {
 	current: string // current layer key
 	visible: Set<string> // visible layer keys
 	only: string | null // single-layer mode
+	dimOthers?: boolean // highlight mode: every layer but the current one greyed and dark, the current one on top
 	hiddenKinds: Set<string> // object kinds switched off in the Objects tab
 	highlight: Set<number> | null // selected object ids: the rest of the board goes grey
 	selectedOutline: Set<number> | null // pads drawn with the magenta selection outline
-	componentBox: [number, number, number, number] | null
+	componentBox: number[] | null // four corners
 	tone?: string | null // highlighted objects in this colour instead of their layer's (compare: red / green)
 }
 
@@ -28,11 +29,12 @@ const BOARD_BG = "#000000"
 // Every layer is drawn about 85% opaque over the black board, so a pad on Top reads #d90000 and stacked layers blend (with all
 // layers on, a via's silver Multi-Layer copper over red reads pale pink). Holes are translucent too:
 // a via hole reads brown on red and olive on green.
-const LAYER_ALPHA = 0.85
-const PAD_HOLE = "#008b8b"
-const VIA_HOLE = "#9b6400"
+export const LAYER_ALPHA = 0.85
+export const PAD_HOLE = "#008b8b"
+export const VIA_HOLE = "#9b6400"
 const SELECT_OUTLINE = "#ff00ff"
 const POUR_ALPHA = 0.25
+const DIMMED = "grayscale(1) brightness(0.45)" // highlight mode: the layers other than the current one
 const SELECTED_POUR_ALPHA = POUR_ALPHA // a selected net's pours stay translucent
 
 // A layer's shapes are split into a grid of chunks so a redraw only fills what is in view: filling a
@@ -136,15 +138,21 @@ export function drawPcb(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, st
 	const order = drawOrder(cache.scene.layers, state.current, camera.flip ? "bottom" : "top")
 	const shown = (key: string) => (state.only ? key === state.only : state.visible.has(key))
 	const grey = state.highlight !== null
-	if (grey) ctx.filter = "grayscale(1) brightness(1.15)"
+	const normal = grey ? "grayscale(1) brightness(1.15)" : "none"
+	const dimmed = state.dimOthers && shown(state.current) && layerOf.has(state.current)
+	ctx.filter = dimmed ? DIMMED : normal
 
 	for (const key of order) {
-		if (!shown(key)) continue
+		if (!shown(key) || (dimmed && key === state.current)) continue
 		const layer = layerOf.get(key)
 		if (!layer) continue
 		drawLayer(ctx, cache, key, layer, state, view)
 	}
-	// Holes go through everything: drawn whenever any copper (or the Multi-Layer) is shown.
+	// Highlight mode: the current layer over everything, in its own colour (a via's ring on it too).
+	ctx.filter = normal
+	if (dimmed) drawLayer(ctx, cache, state.current, layerOf.get(state.current)!, state, view)
+	// Holes go through everything, last, never dimmed: drawn whenever any copper (or the Multi-Layer)
+	// is shown.
 	if (order.some(k => shown(k) && (k === "MULTILAYER" || layerOf.get(k)?.group === "copper"))) drawHoles(ctx, cache, state.hiddenKinds, view)
 
 	if (grey && state.highlight) {
@@ -241,11 +249,14 @@ function drawHighlight(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, sta
 		ctx.fill(viaHoles)
 	}
 	if (state.componentBox) {
-		const [x0, y0, x1, y1] = state.componentBox
+		const b = state.componentBox
 		ctx.save()
 		ctx.strokeStyle = "#a6a600"
 		ctx.lineWidth = 1.5 / state.camera.scale
-		ctx.strokeRect(x0, y0, x1 - x0, y1 - y0)
+		ctx.beginPath()
+		for (let k = 0; k < 4; k++) ctx.lineTo(b[k * 2]!, b[k * 2 + 1]!)
+		ctx.closePath()
+		ctx.stroke()
 		ctx.restore()
 	}
 	if (state.selectedOutline) {
@@ -361,14 +372,18 @@ function addArcStroke(path: Path2D, cx: number, cy: number, r: number, a0: numbe
 const BOX_COLOR = "#2bb52b"
 const HOVER_COLOR = "#3cc8c0"
 let hatch: CanvasPattern | null = null
-export function drawComponentBox(ctx: CanvasRenderingContext2D, camera: PcbCamera, box: [number, number, number, number], selected: boolean) {
+// A part's box (four corners, turned with the part): hatched when selected, outlined when hovered.
+export function drawComponentBox(ctx: CanvasRenderingContext2D, camera: PcbCamera, box: number[], selected: boolean) {
 	const { width, height } = ctx.canvas
 	const f = camera.flip ? -1 : 1
-	const xa = width / 2 + f * (box[0] - camera.cx) * camera.scale
-	const xb = width / 2 + f * (box[2] - camera.cx) * camera.scale
-	const ya = height / 2 - (box[3] - camera.cy) * camera.scale
-	const yb = height / 2 - (box[1] - camera.cy) * camera.scale
-	const x = Math.min(xa, xb), y = ya, w = Math.abs(xb - xa), h = yb - ya
+	// Screen corners, on pixel centres so an upright box stays crisp.
+	const path = new Path2D()
+	for (let k = 0; k < 4; k++) {
+		const sx = width / 2 + f * (box[k * 2]! - camera.cx) * camera.scale
+		const sy = height / 2 - (box[k * 2 + 1]! - camera.cy) * camera.scale
+		path.lineTo(Math.round(sx) + 0.5, Math.round(sy) + 0.5)
+	}
+	path.closePath()
 	const dpr = globalThis.devicePixelRatio || 1
 	ctx.save()
 	ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -388,13 +403,13 @@ export function drawComponentBox(ctx: CanvasRenderingContext2D, camera: PcbCamer
 		if (hatch) {
 			ctx.globalAlpha = 0.55
 			ctx.fillStyle = hatch
-			ctx.fillRect(x, y, w, h)
+			ctx.fill(path)
 			ctx.globalAlpha = 1
 		}
 	}
 	ctx.strokeStyle = selected ? BOX_COLOR : HOVER_COLOR
 	ctx.globalAlpha = 1
 	ctx.lineWidth = 2 * dpr
-	ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(w), Math.round(h))
+	ctx.stroke(path)
 	ctx.restore()
 }

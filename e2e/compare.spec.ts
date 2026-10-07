@@ -55,19 +55,18 @@ test("compare two commits: badges, primary / secondary / diff, highlights", asyn
 	await page.waitForTimeout(800)
 	await shot(page, "pcb")
 
-	// One layer panel for both boards, open from the start, in a column of its own beside them (covering
-	// neither); both boards follow it.
+	// One layer panel for both boards (opened from the doc bar), in a column of its own beside them
+	// (covering neither); both boards follow it.
+	await page.getByRole("button", { name: "Layers/Objects" }).click()
 	await expect(page.getByRole("complementary", { name: "Layers and objects" })).toHaveCount(1)
 	await expect(page.locator(".diff-panel-host").getByRole("complementary", { name: "Layers and objects" })).toBeVisible()
 	const panelBox = (await page.locator(".diff-panel-host").boundingBox())!
 	const paneBox = (await a.boundingBox())!
 	expect(paneBox.x).toBeGreaterThanOrEqual(panelBox.x + panelBox.width - 1)
-	const row = page.locator('.pcb-layer-row[data-layer="TOP"]')
-	await row.hover()
-	await row.getByRole("button", { name: "Only" }).click()
+	await page.getByRole("radio", { name: "Current only" }).click() // Top is current
 	await page.waitForTimeout(600)
 	await shot(page, "pcb-top-only")
-	const onlyOn = (pane: typeof a) => pane.locator(".pcb-canvas").evaluate(el => (el as any).__pcb.layers?.()?.only ?? null)
+	const onlyOn = (pane: typeof a) => pane.locator(".pcb-canvas").evaluate(el => (el as any).__pcb.layers?.()?.mode === "only" ? (el as any).__pcb.layers().current : null)
 	expect(await onlyOn(a)).toBe("TOP")
 	expect(await onlyOn(b)).toBe("TOP")
 	// The doc bar button closes and reopens it.

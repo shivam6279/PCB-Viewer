@@ -5,7 +5,7 @@ import type { ProjectSource } from "../source/types"
 import type { Parser } from "../parse/parser"
 import type { FileChange } from "../diff/diff"
 
-export type ViewTab = "sch" | "pcb" | "3d"
+export type ViewTab = "sch" | "pcb" | "3d" | "bom"
 
 export type Screen =
 	| { kind: "start"; error: string | null }
@@ -67,9 +67,11 @@ interface AppState {
 	focus: Focus | null
 	pcbFocusSeq: number // bumped when the PCB view should frame the selection
 	pcbPanelOpen: boolean
+	pcbStackupOpen: boolean
 	view3dFocusSeq: number // bumped when the 3D view should frame the selection
 	view3dPanelOpen: boolean
 	view3dPrepared: boolean // the 3D data is in: the 3D view may be built ahead, hidden
+	view3dProjection: Projection3d // remembered in this browser
 	setScreen(screen: Screen): void
 	returnToViewer(): void
 	setCompare(compare: Compare | null): void
@@ -86,10 +88,23 @@ interface AppState {
 	// Shows the PCB view framed on a selection.
 	showOnPcb(selection: Selection): void
 	setPcbPanelOpen(open: boolean): void
+	setPcbStackupOpen(open: boolean): void
 	// Shows the 3D view framed on a selection.
 	showOn3d(selection: Selection): void
 	setView3dPanelOpen(open: boolean): void
 	setView3dPrepared(prepared: boolean): void
+	setView3dProjection(projection: Projection3d): void
+}
+
+export type Projection3d = "perspective" | "orthographic"
+const PROJECTION_KEY = "view3d.projection"
+
+function storedProjection(): Projection3d {
+	try {
+		return localStorage.getItem(PROJECTION_KEY) === "orthographic" ? "orthographic" : "perspective"
+	} catch {
+		return "perspective"
+	}
 }
 
 let focusSeq = 0
@@ -107,10 +122,12 @@ export const useAppStore = create<AppState>((set, get) => {
 		selection: null,
 		focus: null,
 		pcbFocusSeq: 0,
-		pcbPanelOpen: true, // the Layers/Objects panel starts open; its doc-bar button toggles it
+		pcbPanelOpen: false, // the Layers/Objects panel starts closed; its doc-bar button toggles it
+		pcbStackupOpen: false,
 		view3dFocusSeq: 0,
 		view3dPanelOpen: false,
 		view3dPrepared: false,
+		view3dProjection: storedProjection(),
 		setScreen(screen) {
 			const current = get().screen
 			set({ screen, parked: screen.kind === "viewer" ? null : current.kind === "viewer" ? current : get().parked })
@@ -155,12 +172,21 @@ export const useAppStore = create<AppState>((set, get) => {
 			updateViewer({ tab: "pcb" })
 		},
 		setPcbPanelOpen: pcbPanelOpen => set({ pcbPanelOpen }),
+		setPcbStackupOpen: pcbStackupOpen => set({ pcbStackupOpen }),
 		showOn3d(selection) {
 			set({ selection, view3dFocusSeq: get().view3dFocusSeq + 1 })
 			updateViewer({ tab: "3d" })
 		},
 		setView3dPanelOpen: view3dPanelOpen => set({ view3dPanelOpen }),
 		setView3dPrepared: view3dPrepared => set({ view3dPrepared }),
+		setView3dProjection(view3dProjection) {
+			try {
+				localStorage.setItem(PROJECTION_KEY, view3dProjection)
+			} catch {
+				// storage blocked: the choice lasts this visit only
+			}
+			set({ view3dProjection })
+		},
 		jumpTo(instanceId, objects, selection) {
 			if (selection !== undefined) set({ selection })
 			set({ focus: { instanceId, objects, seq: ++focusSeq } })

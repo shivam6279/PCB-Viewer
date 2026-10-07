@@ -11,15 +11,12 @@ import { LayersPanel } from "./LayersPanel"
 import { componentSelection, netSelection, pcbHighlight } from "./selection"
 import type { PcbObject, PcbScene } from "./scene"
 import { usePcbScene } from "./use-scene"
+import { StackupDialog } from "./StackupDialog"
+import { LayerLegend } from "./LayerLegend"
+import { cycleCurrent, nextMode, onlyLayer, type LayerState } from "./layer-state"
+import { FlipHorizontal2 } from "lucide-react"
 
-
-export interface LayerState {
-	visible: Set<string>
-	current: string
-	only: string | null
-	flip: boolean
-	hiddenKinds: Set<string>
-}
+export type { LayerState }
 
 // The view (camera + layer settings) per board, so leaving the PCB tab and coming back shows exactly
 // what was there (the component remounts on every tab switch).
@@ -47,8 +44,13 @@ export function defaultLayerState(scene: PcbScene): LayerState {
 		// footprint graphics start hidden.
 		else if (scene.objects.some(o => o.layer === l.key && o.component === null) && !/courtyard|assembly|3d body|component center|outline|dimension/i.test(l.name)) visible.add(l.key)
 	}
-	return { visible, current: "TOP", only: null, flip: false, hiddenKinds: new Set() }
+	return { visible, current: "TOP", mode: "all", flip: false, hiddenKinds: new Set() }
 }
+
+// Pointer and wheel events over the panels and the legend are theirs, not the board's.
+const inPanel = (e: Event) => (e.target as Element | null)?.closest?.(".pcb-layers, .pcb-legend, .pcb-mirror-badge") != null
+
+const closeStackup = () => useAppStore.getState().setPcbStackupOpen(false)
 
 export function PcbView({ parser, active = true }: { parser: Parser; active?: boolean }) {
 	const pane = usePane()
@@ -60,6 +62,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const link = useRef<ViewLink<{ cx: number; cy: number; scale: number }> | null>(null)
 	link.current = (pane.links?.pcb as ViewLink<{ cx: number; cy: number; scale: number }> | undefined) ?? null
 	const panelOpen = useAppStore(s => s.pcbPanelOpen)
+	const stackupOpen = useAppStore(s => s.pcbStackupOpen)
 	const data = projectData.status === "ready" ? projectData.data : null
 	const [layers, setLayers] = useState<LayerState | null>(null)
 	// Side by side there is one set of layer controls: the left (primary) board's. The right one follows
@@ -68,6 +71,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const followsLayers = pane.diff && pane.side === "secondary"
 	const layersRef = useRef<LayerState | null>(null)
 	layersRef.current = layers
+	const followsLayersRef = useRef(followsLayers)
+	followsLayersRef.current = followsLayers
 	const frame = useRef<HTMLDivElement>(null)
 	const canvas = useRef<HTMLCanvasElement>(null)
 	const camera = useRef<PcbCamera | null>(null)
@@ -77,9 +82,9 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const canvases = useRef<HTMLCanvasElement[]>([])
 	const blit = useRef<() => boolean>(() => false)
 	const timing = useRef({ board: 0, labels: 0 })
-	const labelRules = useRef<{ isShown(o: PcbObject): boolean; isCurrent(o: PcbObject): boolean } | null>(null)
+	const labelRules = useRef<{ isActive(o: PcbObject): boolean; isCurrent(o: PcbObject): boolean } | null>(null)
 	const bitmap = useRef<{ canvas: HTMLCanvasElement; camera: PcbCamera; at: number } | null>(null)
-	const selectedBox = useRef<[number, number, number, number] | null>(null)
+	const selectedBox = useRef<number[] | null>(null)
 	const hoverComponent = useRef<number | null>(null)
 
 	const load = usePcbScene(parser, data, projectData.status === "error" ? projectData.message : null)
@@ -103,18 +108,23 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	// layer or a via/through-hole pad passing through it. Only these are labelled, hovered or picked.
 	const rules = useMemo(() => {
 		if (!scene || !layers) return null
-		const onlyCopper = layers.only !== null && scene.layers.find(l => l.key === layers.only)?.group === "copper"
+		const only = onlyLayer(layers)
+		const onlyCopper = only !== null && scene.layers.find(l => l.key === only)?.group === "copper"
 		const stackOf = new Map(scene.layers.filter(l => l.group === "copper").map(l => [l.key, l.stack]))
 		const spans = (o: PcbObject, key: string) => {
 			if (!o.span) return false
 			const a = stackOf.get(o.span[0]) ?? 0, b = stackOf.get(o.span[1]) ?? Infinity, k = stackOf.get(key) ?? -1
 			return k >= Math.min(a, b) && k <= Math.max(a, b)
 		}
+		const isShown = (o: PcbObject) =>
+			!layers.hiddenKinds.has(o.kind) && (only ? o.layer === only || (onlyCopper && spans(o, only)) : layers.visible.has(o.layer))
+		const isCurrent = (o: PcbObject) => o.layer === layers.current || spans(o, layers.current)
 		return {
-			isShown: (o: PcbObject) =>
-				!layers.hiddenKinds.has(o.kind) &&
-				(layers.only ? o.layer === layers.only || (onlyCopper && spans(o, layers.only)) : layers.visible.has(o.layer)),
-			isCurrent: (o: PcbObject) => o.layer === layers.current || spans(o, layers.current),
+			isShown,
+			isCurrent,
+			// What is labelled, hovered and picked: in highlight mode only what is on the current layer (the
+			// rest of the board is greyed out), else everything shown.
+			isActive: layers.mode === "highlight" ? (o: PcbObject) => isShown(o) && isCurrent(o) : isShown,
 		}
 	}, [scene, layers])
 	labelRules.current = rules
@@ -138,7 +148,11 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const live = camera.current
 		const idx = index.current
 		if (!el || !c || !live || !layers || !idx) return
-		live.flip = layers.flip
+		// Mirroring turns the board about its own centre, so it stays where it is on screen.
+		if (live.flip !== layers.flip) {
+			live.cx = scene!.bounds[0] + scene!.bounds[2] - live.cx
+			live.flip = layers.flip
+		}
 		const cam = { ...live, scale: live.scale * quality }
 		const slot = quality < 1 ? 1 : 0
 		let off = canvases.current[slot]
@@ -156,7 +170,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			camera: cam,
 			current: layers.current,
 			visible: layers.visible,
-			only: layers.only,
+			only: onlyLayer(layers),
+			dimOthers: layers.mode === "highlight",
 			hiddenKinds: layers.hiddenKinds,
 			highlight: highlight?.objects ?? null,
 			selectedOutline: highlight?.outline ?? null,
@@ -193,10 +208,10 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		if (idx && rules) {
 			const halfW = el.width / 2 / cam.scale
 			const halfH = el.height / 2 / cam.scale
-			drawLabels(ctx, objectsIn(idx, cam.cx - halfW, cam.cy - halfH, cam.cx + halfW, cam.cy + halfH), cam, rules.isShown, rules.isCurrent)
+			drawLabels(ctx, objectsIn(idx, cam.cx - halfW, cam.cy - halfH, cam.cx + halfW, cam.cy + halfH), cam, rules.isActive, rules.isCurrent)
 		}
 		// The selected part's box (green, hatched) and the hovered part's box (outline only).
-		const hovered = hoverComponent.current !== null ? scene?.components[hoverComponent.current]?.outline : undefined
+		const hovered = hoverComponent.current !== null ? scene?.components[hoverComponent.current]?.box : undefined
 		if (hovered && hovered !== selectedBox.current) drawComponentBox(ctx, cam, hovered, false)
 		if (selectedBox.current) drawComponentBox(ctx, cam, selectedBox.current, true)
 		return cx - w / 2 <= 0 && cy - h / 2 <= 0 && cx + w / 2 >= el.width && cy + h / 2 >= el.height
@@ -294,8 +309,22 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 				},
 			},
 		})
+		// Ctrl+Shift+wheel steps the current layer through the visible ones: one step per notch (a
+		// trackpad's stream of small deltas adds up to a notch first).
+		let layerWheel = 0
 		const onWheel = (e: WheelEvent) => {
+			if (inPanel(e)) return
 			e.preventDefault()
+			if (e.ctrlKey && e.shiftKey) {
+				if (followsLayersRef.current) return
+				const delta = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1)
+				layerWheel += delta
+				if (Math.abs(layerWheel) < 40) return
+				const dir = layerWheel > 0 ? -1 : 1 // wheel up: the next layer down the list
+				layerWheel = 0
+				setLayers(prev => (prev ? cycleCurrent(prev, scene, dir) : prev))
+				return
+			}
 			const cam = camera.current!
 			const before = toWorld(e.clientX, e.clientY)
 			const fit = Math.min(el.width / (scene.bounds[2] - scene.bounds[0]), el.height / (scene.bounds[3] - scene.bounds[1]))
@@ -306,7 +335,6 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			schedule()
 		}
 		let drag: { x: number; y: number; sx: number; sy: number; moved: boolean; button: number } | null = null
-		const inPanel = (e: Event) => (e.target as Element | null)?.closest?.(".pcb-layers") != null
 		const onDown = (e: PointerEvent) => {
 			if (inPanel(e)) return
 			drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, button: e.button }
@@ -382,7 +410,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		if (!scene || !idx || !cam || !layers || !rules) return null
 		return hitTest(idx, p.x, p.y, {
 			tolerance: (HIT_PX * (window.devicePixelRatio || 1)) / cam.scale,
-			isShown: rules.isShown,
+			isShown: rules.isActive,
 			current: layers.current,
 			side: layers.flip ? "bottom" : "top",
 		})
@@ -406,7 +434,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const hoverRef = useRef<(p: { x: number; y: number } | null) => void>(() => {})
 	hoverRef.current = p => {
 		const idx = index.current
-		const next = p && idx && rules ? componentAt(idx, p.x, p.y, rules.isShown) : null
+		const next = p && idx && rules ? componentAt(idx, p.x, p.y, rules.isActive) : null
 		if (next === hoverComponent.current) return
 		hoverComponent.current = next
 		blit.current()
@@ -428,20 +456,21 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		return layerLink.subscribe(v => setLayers(v))
 	}, [layerLink, followsLayers])
 
-	// Keyboard: +/- cycle the current layer, Esc clears the selection.
+	// Keyboard: +/- step the current layer, Shift+S the layer mode, F mirrors, Esc clears the selection.
 	useEffect(() => {
 		if (!scene || !active || followsLayers) return
 		const onKey = (e: KeyboardEvent) => {
-			if ((e.target as Element | null)?.closest?.("input, textarea, select")) return
+			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
 			if (e.key === "Escape") useAppStore.getState().select(null)
-			if (e.key !== "+" && e.key !== "-" && e.key !== "=") return
-			setLayers(prev => {
-				if (!prev) return prev
-				const copper = scene.layers.filter(l => l.group === "copper" && prev.visible.has(l.key)).map(l => l.key)
-				const i = copper.indexOf(prev.current)
-				const next = copper[(i + (e.key === "-" ? -1 : 1) + copper.length) % copper.length]
-				return next ? { ...prev, current: next, only: prev.only ? next : null } : prev
-			})
+			if (e.ctrlKey || e.metaKey || e.altKey) return
+			const change = (f: (s: LayerState) => LayerState) => {
+				e.preventDefault()
+				setLayers(prev => (prev ? f(prev) : prev))
+			}
+			if (e.code === "KeyS" && e.shiftKey) return change(nextMode)
+			if (e.code === "KeyF" && !e.shiftKey) return change(prev => ({ ...prev, flip: !prev.flip }))
+			if (e.key === "+" || e.key === "=") return change(prev => cycleCurrent(prev, scene, 1))
+			if (e.key === "-") return change(prev => cycleCurrent(prev, scene, -1))
 		}
 		window.addEventListener("keydown", onKey)
 		return () => window.removeEventListener("keydown", onKey)
@@ -463,6 +492,20 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 					)
 					return pane.panelHost ? createPortal(panel, pane.panelHost) : panel
 				})()}
+			{scene && layers && layers.flip && (
+				<button className="pcb-mirror-badge" onClick={() => !followsLayers && setLayers({ ...layers, flip: false })} disabled={followsLayers}>
+					<FlipHorizontal2 size={14} />
+					Mirrored · viewed from the bottom
+				</button>
+			)}
+			{scene && layers && !followsLayers && <LayerLegend scene={scene} state={layers} onChange={setLayers} shifted={panelOpen && !pane.panelHost} />}
+			{/* A modal over the whole app (outside the board's pointer handling); side by side, the left board's. */}
+			{stackupOpen &&
+				active &&
+				!followsLayers &&
+				data?.pcb &&
+				data.pcb.stackup.length > 0 &&
+				createPortal(<StackupDialog stackup={data.pcb.stackup} colors={new Map(data.pcb.layers.map(l => [l.key, l.color]))} onClose={closeStackup} />, document.body)}
 		</div>
 	)
 }

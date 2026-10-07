@@ -10,3 +10,7 @@ playwright-report/
 scratch/
 # local GitHub index (npm run index); the deploy builds its own
 public/index/
+
+# Private, never committed: design notes and local agent instructions
+notes/
+CLAUDE.local.md

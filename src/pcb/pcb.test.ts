@@ -3,7 +3,7 @@ import type { CompiledProject } from "../model/compile"
 import { buildIndex, hitTest, primContains } from "./hit"
 import { describeLayer, drawOrder, type PcbLayer } from "./layers"
 import { netSummaries } from "./nets"
-import { strokeText, type PcbObject, type PcbScene } from "./scene"
+import { boxArea, boxContains, cornersOf, rotatedBox, strokeText, type PcbObject, type PcbScene } from "./scene"
 import { componentSelection, netSelection, pcbHighlight } from "./selection"
 
 const layer = (key: string, stack: number, z?: number): PcbLayer => ({ ...describeLayer(key, () => undefined), stack, z })
@@ -62,7 +62,7 @@ test("clicks pick pads and vias first, then copper tracks, then the component", 
 			obj({ kind: "pad", layer: "TOP", net: "A", component: 0, prims: [{ t: "circle", x: 100, y: 0, r: 20 }] }),
 			obj({ kind: "track", layer: "TOPOVERLAY", component: 0, prims: [{ t: "seg", x1: 80, y1: 40, x2: 160, y2: 40, w: 5 }] }),
 		],
-		[{ designator: "R1", sourceUniqueId: "\\R", footprint: "", footprintDescription: "", comment: "", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], outline: [80, -20, 160, 45] }],
+		[{ designator: "R1", sourceUniqueId: "\\R", footprint: "", footprintDescription: "", comment: "", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
 	)
 	const idx = buildIndex(s)
 	const opts = { tolerance: 1, isShown: () => true, current: "TOP", side: "top" as const }
@@ -98,7 +98,7 @@ test("selections from either view map onto the board", () => {
 			obj({ kind: "pad", layer: "TOP", net: "VIN_1", component: 0, prims: [{ t: "circle", x: 0, y: 0, r: 5 }] }),
 			obj({ kind: "track", layer: "TOP", net: "VIN_1", prims: [{ t: "seg", x1: 0, y1: 0, x2: 50, y2: 0, w: 5 }] }),
 		],
-		[{ designator: "C1", sourceUniqueId: "\\1SYM\\C", footprint: "", footprintDescription: "", comment: "", x: 0, y: 0, rotation: 0, side: "top", objects: [0], bbox: [-5, -5, 5, 5], outline: [-5, -5, 5, 5] }],
+		[{ designator: "C1", sourceUniqueId: "\\1SYM\\C", footprint: "", footprintDescription: "", comment: "", x: 0, y: 0, rotation: 0, side: "top", objects: [0], bbox: [-5, -5, 5, 5], box: cornersOf([-5, -5, 5, 5]), outline: [-5, -5, 5, 5] }],
 	)
 	const compiled = {
 		nets: [{ id: 0, netName: "VIN", physicalName: "VIN_1", names: [], occurrences: [], pins: [] }],
@@ -111,5 +111,21 @@ test("selections from either view map onto the board", () => {
 	expect([...pcbHighlight(s, { kind: "net", netId: 0 }, compiled)!.objects]).toEqual([0, 1])
 	const part = pcbHighlight(s, { kind: "component", id: "Top#3" }, compiled)!
 	expect([...part.objects]).toEqual([0])
-	expect(part.componentBox).toEqual([-5, -5, 5, 5])
+	expect(part.componentBox).toEqual([-5, -5, 5, -5, 5, 5, -5, 5])
+})
+
+test("a part's box is measured in its own frame and turned with it", () => {
+	// A 40 x 10 pad centred on the part's origin (100, 50), the part turned 30°.
+	const a = (30 * Math.PI) / 180
+	const rect = [-20, -5, 20, -5, 20, 5, -20, 5].map((v, i, all) => (i % 2 === 0 ? 100 + v * Math.cos(a) - all[i + 1]! * Math.sin(a) : 50 + all[i - 1]! * Math.sin(a) + v * Math.cos(a)))
+	const box = rotatedBox([{ t: "poly", rings: [rect] }], 100, 50, 30)!
+	// The box is the pad itself: 40 x 10, not the 39.6 x 28.7 axis-aligned extent of the turned pad.
+	expect(boxArea(box)).toBeCloseTo(400, 6)
+	for (let k = 0; k < 8; k++) expect(box[k]).toBeCloseTo(rect[k]!, 6)
+	expect(boxContains(box, 100, 50)).toBe(true)
+	// Inside the axis-aligned extent, outside the turned pad.
+	expect(boxContains(box, 100 + 17, 50 - 9)).toBe(false)
+	// Strokes keep their width; an arc counts along its sweep only (a quarter, 0° to 90°).
+	const arc = rotatedBox([{ t: "arc", x: 0, y: 0, r: 10, a0: 0, a1: 90, w: 2 }], 0, 0, 0)!
+	expect(arc.map(v => Math.round(v * 100) / 100)).toEqual([-1, -1, 11, -1, 11, 11, -1, 11])
 })

@@ -1,6 +1,6 @@
 import { join } from "node:path"
 import { expect, test, type Page } from "@playwright/test"
-import { hasCorpus } from "../tests/corpus/env"
+import { CORPUS, hasCorpus } from "../tests/corpus/env"
 import { CUBLI_DIR, zipTopLevel } from "./fixtures"
 
 const SHOTS_DIR = process.env.SHOTS_DIR
@@ -120,27 +120,95 @@ test("a component selected on the schematic opens on the board with PCB, framed 
 	await expect(page.locator(".sch-overlay .sel-box")).toHaveCount(1)
 })
 
-test("the layers panel: Only shows one layer, Bottom mirrors the board, +/- changes the current layer", async ({ page }) => {
-	await openCubliPcb(page) // the Layers/Objects panel is open from the start
-	const panel = page.getByRole("complementary", { name: "Layers and objects" })
-	await expect(panel.locator(".pcb-layer-row")).toContainText(["Top Layer", "GND 1", "Signal 1", "PWR 1", "GND 2", "Signal 2", "PWR 2", "Bottom Layer"])
-	await expect(panel.getByRole("checkbox", { name: "Current layer Top Layer" })).toBeChecked()
-	const row = panel.locator('.pcb-layer-row[data-layer="MID-LAYER3"]')
-	await row.hover()
-	await row.getByRole("button", { name: "Only" }).click()
-	await expect(panel.locator('.pcb-layer-row:not(.hidden)')).toHaveCount(1)
-	await shot(page, "pcb-only-gnd1")
-	await panel.getByRole("button", { name: "Reset" }).click()
-	await expect(panel.locator('.pcb-layer-row[data-layer="TOP"]')).not.toHaveClass(/hidden/)
+test("the layer legend: current layer, modes, eyes, mirror; and their keys", async ({ page }) => {
+	await openCubliPcb(page)
+	const legend = page.getByRole("region", { name: "Layers" })
+	const state = () => page.evaluate(() => ((document.querySelector(".pcb-canvas") as any).__pcb as Pcb & { layers(): any }).layers())
+	await expect(legend.getByRole("group", { name: "Copper" }).locator(".pcb-legend-row")).toContainText(["Top Layer", "GND 1", "Signal 1", "PWR 1", "GND 2", "Signal 2", "PWR 2", "Bottom Layer"])
+	await expect(legend.locator(".pcb-legend-row.current")).toHaveText("Top Layer")
+	await shot(page, "pcb-legend")
 
-	await panel.getByRole("button", { name: "Bottom", exact: true }).click()
-	await expect.poll(() => page.evaluate(() => ((document.querySelector(".pcb-canvas") as any).__pcb as Pcb).camera().flip)).toBe(true)
-	await shot(page, "pcb-bottom")
-	await panel.getByRole("button", { name: "Top", exact: true }).click()
-
+	// A click makes a layer current; +/- and Ctrl+Shift+wheel step through the visible layers.
+	await legend.locator('.pcb-legend-row[data-layer="MID-LAYER3"]').click()
+	await expect(legend.locator(".pcb-legend-row.current")).toHaveText("GND 1")
 	await page.mouse.move(1000, 500)
 	await page.keyboard.press("+")
-	await expect(panel.getByRole("checkbox", { name: "Current layer GND 1" })).toBeChecked()
+	await expect(legend.locator(".pcb-legend-row.current")).toHaveText("Signal 1")
+	await page.keyboard.down("Control")
+	await page.keyboard.down("Shift")
+	await page.mouse.wheel(0, 100)
+	await page.waitForTimeout(100)
+	await page.mouse.wheel(0, -100)
+	await page.waitForTimeout(100)
+	await page.mouse.wheel(0, -100)
+	await page.keyboard.up("Shift")
+	await page.keyboard.up("Control")
+	// Wheel down steps back up the list, wheel up down it: Signal 1 -> GND 1 -> Signal 1 -> PWR 1.
+	await expect(legend.locator(".pcb-legend-row.current")).toHaveText("PWR 1")
+	const zoomBefore = await page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.camera().scale)
+
+	// Shift+S: all -> highlight -> only -> all.
+	await page.keyboard.press("Shift+S")
+	await expect(legend.getByRole("button", { name: /Layer mode/ })).toHaveText("Highlight current")
+	await page.waitForTimeout(300)
+	await shot(page, "pcb-highlight-gnd1")
+	await page.keyboard.press("Shift+S")
+	await expect(legend.getByRole("button", { name: /Layer mode/ })).toHaveText("Current only")
+	expect((await state()).mode).toBe("only")
+	await page.waitForTimeout(300)
+	await shot(page, "pcb-only-gnd1")
+	await page.keyboard.press("Shift+S")
+	expect((await state()).mode).toBe("all")
+	// The Ctrl+Shift wheel did not zoom.
+	expect(await page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.camera().scale)).toBe(zoomBefore)
+
+	// The eye hides a layer.
+	const top = legend.locator('.pcb-legend-row[data-layer="TOP"]')
+	await top.getByRole("button", { name: "Hide Top Layer" }).click()
+	await expect(top).toHaveClass(/off/)
+	expect(await page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().visible.has("TOP"))).toBe(false)
+	await top.getByRole("button", { name: "Show Top Layer" }).click()
+
+	// F mirrors about the board's own centre: the board stays where it is on screen, with a note on it.
+	// The panel's Flip button, the legend's and the note all turn it back.
+	const flipped = () => page.evaluate(() => ((document.querySelector(".pcb-canvas") as any).__pcb as Pcb).camera().flip)
+	const boardCentre = () =>
+		page.evaluate(() => {
+			const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+			const [x0, y0, x1, y1] = pcb.scene.bounds
+			return pcb.toClient((x0 + x1) / 2, (y0 + y1) / 2)
+		})
+	// Board off to one side first.
+	await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const c = pcb.camera()
+		pcb.view(c.cx + 400 / c.scale, c.cy, c.scale)
+	})
+	const before = await boardCentre()
+	await page.keyboard.press("f")
+	await expect.poll(flipped).toBe(true)
+	const after = await boardCentre()
+	expect(Math.abs(after.x - before.x)).toBeLessThan(1)
+	expect(Math.abs(after.y - before.y)).toBeLessThan(1)
+	await expect(page.locator(".pcb-mirror-badge")).toBeVisible()
+	await expect(legend.getByRole("button", { name: "Flip" })).toHaveAttribute("aria-pressed", "true")
+	await shot(page, "pcb-mirrored")
+	await page.getByRole("button", { name: "Layers/Objects" }).click() // the panel starts closed
+	const panel = page.getByRole("complementary", { name: "Layers and objects" })
+	await expect(panel.getByRole("button", { name: "Flip" })).toHaveAttribute("aria-pressed", "true")
+	await panel.getByRole("button", { name: "Flip" }).click()
+	await expect(page.locator(".pcb-mirror-badge")).toHaveCount(0)
+	await legend.getByRole("button", { name: "Flip" }).click()
+	await page.locator(".pcb-mirror-badge").click()
+	await expect.poll(flipped).toBe(false)
+
+	// 1-4 switch views from anywhere.
+	await page.keyboard.press("4")
+	await expect(page.getByRole("tab", { name: "BOM" })).toHaveAttribute("aria-selected", "true")
+	await page.keyboard.press("1")
+	await expect(page.getByRole("tab", { name: "SCH" })).toHaveAttribute("aria-selected", "true")
+	await page.keyboard.press("2")
+	await expect(page.getByRole("tab", { name: "PCB" })).toHaveAttribute("aria-selected", "true")
 })
 
 test("right-click on the board opens no menu", async ({ page }) => {
@@ -195,11 +263,10 @@ test("hovering inside a part outlines it; clicking anywhere in it selects it; th
 })
 
 test("on Top only, bottom-side parts cannot be picked", async ({ page }) => {
-	await openCubliPcb(page) // the Layers/Objects panel is open from the start
-	const row = page.locator('.pcb-layer-row[data-layer="TOP"]')
-	await row.hover()
-	await row.getByRole("button", { name: "Only" }).click()
-	await page.getByRole("button", { name: "Layers/Objects" }).click()
+	await openCubliPcb(page)
+	await page.mouse.move(1000, 500)
+	await page.keyboard.press("Shift+S")
+	await page.keyboard.press("Shift+S") // current only (Top is current)
 	const p = await partPoint(page, BOTTOM_PART)
 	await page.evaluate(i => {
 		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
@@ -228,10 +295,9 @@ test("double-clicking a track selects its whole net", async ({ page }) => {
 })
 
 test("leaving the PCB tab and coming back keeps the view and layers", async ({ page }) => {
-	await openCubliPcb(page) // the Layers/Objects panel is open from the start
-	const row = page.locator('.pcb-layer-row[data-layer="TOP"]')
-	await row.hover()
-	await row.getByRole("button", { name: "Only" }).click()
+	await openCubliPcb(page)
+	await page.getByRole("button", { name: "Layers/Objects" }).click() // the panel starts closed
+	await page.getByRole("radio", { name: "Current only" }).click() // Top is current
 	const box = (await page.locator(".pcb-view").boundingBox())!
 	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
 	for (let k = 0; k < 5; k++) await page.mouse.wheel(0, -240)
@@ -243,5 +309,178 @@ test("leaving the PCB tab and coming back keeps the view and layers", async ({ p
 	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible()
 	await page.waitForTimeout(200)
 	expect(await camera(page)).toEqual(before)
-	await expect(page.locator(".pcb-layer-row:not(.hidden)")).toHaveCount(1)
+	await expect(page.getByRole("region", { name: "Layers" }).getByRole("button", { name: /Layer mode/ })).toHaveText("Current only")
+})
+
+test("Stackup shows the board's layer stack as a cross-section with its layer table", async ({ page }) => {
+	await openCubliPcb(page)
+	await page.getByRole("button", { name: "Stackup" }).click()
+	const dialog = page.getByRole("dialog", { name: "Layer stack" })
+	await expect(dialog).toBeVisible()
+	// Top Paste .. Bottom Paste: 21 layers, 8 of them copper.
+	await expect(dialog.locator("tbody tr")).toHaveCount(21)
+	await expect(dialog.locator(".stackup-summary")).toContainText("8 copper layers")
+	await expect(dialog.locator('tr[data-kind="core"]')).toContainText("FR-4")
+	await shot(page, "pcb-stackup")
+	await dialog.getByRole("radio", { name: "mm" }).click()
+	await expect(dialog.locator(".stackup-summary b")).toHaveText(/ mm$/)
+	await page.keyboard.press("Escape")
+	await expect(dialog).toHaveCount(0)
+})
+
+test("the legend sits top left; it moves by its head, resizes by its right and bottom edges, folds to its corner", async ({ page }) => {
+	await openCubliPcb(page)
+	const legend = page.getByRole("region", { name: "Layers" })
+	const view = (await page.locator(".pcb-view").boundingBox())!
+	const b0 = (await legend.boundingBox())!
+	expect(b0.x - view.x).toBeLessThan(20)
+	expect(b0.y - view.y).toBeLessThan(20)
+
+	const head = legend.locator(".pcb-legend-head")
+	const hb = (await head.boundingBox())!
+	await page.mouse.move(hb.x + hb.width - 40, hb.y + hb.height / 2)
+	await page.mouse.down()
+	await page.mouse.move(hb.x + hb.width - 40 + 200, hb.y + hb.height / 2 + 80, { steps: 5 })
+	await page.mouse.up()
+	const b1 = (await legend.boundingBox())!
+	expect(Math.round(b1.x - b0.x)).toBe(200)
+	expect(Math.round(b1.y - b0.y)).toBe(80)
+
+	const corner = (await legend.locator(".pcb-legend-resize.corner").boundingBox())!
+	await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2)
+	await page.mouse.down()
+	await page.mouse.move(corner.x + corner.width / 2 + 60, corner.y + corner.height / 2 - 150, { steps: 5 })
+	await page.mouse.up()
+	const b2 = (await legend.boundingBox())!
+	expect(Math.round(b2.width - b1.width)).toBe(60)
+	expect(Math.round(b2.height - b1.height)).toBe(-150)
+	expect([Math.round(b2.x), Math.round(b2.y)]).toEqual([Math.round(b1.x), Math.round(b1.y)])
+	await shot(page, "pcb-legend-moved")
+
+	// Folding keeps its top left corner; the placement survives a reload.
+	await legend.getByRole("button", { name: "Collapse layers" }).click()
+	const b3 = (await legend.boundingBox())!
+	expect([Math.round(b3.x), Math.round(b3.y)]).toEqual([Math.round(b1.x), Math.round(b1.y)])
+	expect(b3.height).toBeLessThan(50)
+	await legend.getByRole("button", { name: "Expand layers" }).click()
+	await page.reload()
+	await openCubliPcb(page)
+	const b4 = (await page.getByRole("region", { name: "Layers" }).boundingBox())!
+	expect([Math.round(b4.x), Math.round(b4.y), Math.round(b4.width), Math.round(b4.height)]).toEqual([Math.round(b2.x), Math.round(b2.y), Math.round(b2.width), Math.round(b2.height)])
+
+	// Double-clicking its head glides it back to where it started, at its starting size.
+	const moved = page.getByRole("region", { name: "Layers" })
+	const head2 = (await moved.locator(".pcb-legend-head .grow").boundingBox())!
+	await page.mouse.dblclick(head2.x + head2.width / 2, head2.y + head2.height / 2)
+	expect(await moved.evaluate(el => el.getAnimations().length)).toBe(1)
+	await expect.poll(() => moved.evaluate(el => el.getAnimations().length)).toBe(0)
+	const b5 = (await moved.boundingBox())!
+	expect([Math.round(b5.x), Math.round(b5.y), Math.round(b5.width), Math.round(b5.height)]).toEqual([Math.round(b0.x), Math.round(b0.y), Math.round(b0.width), Math.round(b0.height)])
+})
+
+test("a turned part's box turns with it (measured as placed at 0°)", async ({ page }) => {
+	await page.goto("/")
+	const dir = join(CORPUS, "Quad/Rev5/Rev5.3/FlightController")
+	await page.getByTestId("zip-input").setInputFiles({ name: "FC.zip", mimeType: "application/zip", buffer: zipTopLevel(dir, "FC") })
+	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
+	await page.getByRole("tab", { name: "PCB" }).click()
+	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
+	// U1 sits at 315°: its box edges run at 45° to the screen, and the box hugs the part (its area well
+	// under the axis-aligned extent's).
+	const u1 = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const i = pcb.scene.components.findIndex((c: any) => c.designator === "U1")
+		const c = pcb.scene.components[i]
+		const [x0, y0, x1, y1] = c.outline
+		// The part's extent filling about 40% of the view's height.
+		pcb.view(c.x, c.y, ((document.querySelector(".pcb-canvas") as HTMLCanvasElement).height * 0.4) / (y1 - y0))
+		const b = c.box
+		const angle = (Math.atan2(b[3] - b[1], b[2] - b[0]) * 180) / Math.PI
+		const area = Math.hypot(b[2] - b[0], b[3] - b[1]) * Math.hypot(b[4] - b[2], b[5] - b[3])
+		// Near a corner of the turned box (inside it); and a corner of the axis-aligned extent (outside it).
+		const mx = (b[0] + b[2] + b[4] + b[6]) / 4, my = (b[1] + b[3] + b[5] + b[7]) / 4
+		const nearCorner = pcb.toClient(mx + (b[0] - mx) * 0.85, my + (b[1] - my) * 0.85)
+		const extentCorner = pcb.toClient(x0 + (x1 - x0) * 0.04, y0 + (y1 - y0) * 0.04)
+		return { index: i, rotation: c.rotation, angle, area, extent: (x1 - x0) * (y1 - y0), nearCorner, extentCorner }
+	})
+	expect(u1.rotation).toBe(315)
+	expect(Math.abs((((u1.angle % 90) + 90) % 90) - 45)).toBeLessThan(0.01)
+	expect(u1.area).toBeLessThan(u1.extent * 0.7)
+	await page.waitForTimeout(300)
+	const hovered = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
+	await page.mouse.move(u1.extentCorner.x, u1.extentCorner.y)
+	await expect.poll(hovered).not.toBe(u1.index)
+	await page.mouse.move(u1.nearCorner.x, u1.nearCorner.y)
+	await expect.poll(hovered).toBe(u1.index)
+	await page.waitForTimeout(200)
+	await shot(page, "pcb-rotated-box")
+})
+
+test("highlight mode: vias keep their brown hole, ringed in the current layer's colour", async ({ page }) => {
+	await openCubliPcb(page)
+	await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const via = pcb.scene.objects.find((o: any) => o.kind === "via" && o.net === "GND")
+		pcb.view(via.prims[0].x, via.prims[0].y, pcb.camera().scale * 12)
+	})
+	await page.mouse.move(1200, 500)
+	await page.keyboard.press("+") // GND 1 current
+	await page.keyboard.press("Shift+S") // highlight current
+	await page.waitForTimeout(400)
+	await shot(page, "pcb-highlight-vias")
+	// The middle of a GND via (on GND 1) is the hole's brown, not the layer's green.
+	const px = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const c = pcb.camera()
+		const halfW = 400 / c.scale, halfH = 300 / c.scale
+		const via = pcb.scene.objects.find((o: any) => o.kind === "via" && o.net === "GND" && Math.abs(o.prims[0].x - c.cx) < halfW && Math.abs(o.prims[0].y - c.cy) < halfH)
+		const p = pcb.toClient(via.prims[0].x, via.prims[0].y)
+		const ring = pcb.toClient(via.prims[0].x + (via.prims[0].r + via.holes[0].r) / 2, via.prims[0].y)
+		const canvas = document.querySelector(".pcb-canvas") as HTMLCanvasElement
+		const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio
+		const at = (q: { x: number; y: number }) => Array.from(canvas.getContext("2d")!.getImageData(Math.round((q.x - r.left) * dpr), Math.round((q.y - r.top) * dpr), 1, 1).data.slice(0, 3))
+		return { hole: at(p), ring: at(ring) }
+	})
+	const [hr, hg, hb] = px.hole as [number, number, number]
+	expect(hr).toBeGreaterThan(hg) // brownish: red over green over blue
+	expect(hg).toBeGreaterThan(hb)
+	const [rr, rg] = px.ring as [number, number, number]
+	expect(rg).toBeGreaterThan(rr) // GND 1 is green
+})
+
+test("highlight mode: only what is on the current layer can be hovered and picked", async ({ page }) => {
+	await openCubliPcb(page)
+	// U13_ESC_1: an SMD part on Top, framed in the middle of the view.
+	const part = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const i = pcb.scene.components.findIndex((c: any) => c.designator === "U13_ESC")
+		const c = pcb.scene.components[i]
+		const [x0, y0, x1, y1] = c.outline
+		pcb.view((x0 + x1) / 2, (y0 + y1) / 2, ((document.querySelector(".pcb-canvas") as HTMLCanvasElement).height * 0.4) / (y1 - y0))
+		const b = c.box
+		// Inside its box near a corner, clear of its pads.
+		const mx = (b[0] + b[4]) / 2, my = (b[1] + b[5]) / 2
+		return { index: i, at: pcb.toClient(mx + (b[0] - mx) * 0.9, my + (b[1] - my) * 0.9) }
+	})
+	const hovered = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
+	await page.mouse.move(part.at.x, part.at.y)
+	await expect.poll(hovered).toBe(part.index)
+
+	// GND 1 current, highlighted: the Top part is greyed out, and neither hovers nor picks.
+	await page.keyboard.press("+")
+	await page.keyboard.press("Shift+S")
+	await page.mouse.move(part.at.x + 3, part.at.y + 3)
+	await expect.poll(hovered).toBeNull()
+	// (A via passing through GND 1 there still can be.)
+	await page.mouse.click(part.at.x + 3, part.at.y + 3)
+	await page.waitForTimeout(200)
+	await expect(page.getByRole("complementary", { name: "Component properties" })).toHaveCount(0)
+	await page.keyboard.press("Escape")
+
+	// Back to Top: it is on the current layer again.
+	await page.keyboard.press("-")
+	await page.mouse.move(part.at.x, part.at.y)
+	await expect.poll(hovered).toBe(part.index)
+	await page.mouse.click(part.at.x, part.at.y)
+	await expect(page.locator(".inspector")).toContainText("U13_ESC")
 })

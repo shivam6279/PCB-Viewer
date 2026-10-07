@@ -3,6 +3,7 @@
 // body: an embedded STEP model placed on the board, or an extruded outline. Runs in the parse worker;
 // plain data. Lengths are board mils (absolute, as in the PCB scene), angles degrees.
 import type { AltiumBinaryPcbDoc } from "altiumts"
+import { copperKeyOfId } from "../pcb/stackup"
 
 export type Rgb = [number, number, number] // 0..1
 
@@ -133,14 +134,8 @@ export function stackThickness(boardItems: { key: string; value: string }[]): nu
 	return total > 0 ? total : 62.99 // 1.6 mm
 }
 
-// Altium V9 layer ids -> the scene's copper layer keys.
-export function copperKeyOfId(id: number): string | null {
-	if (id === 16777217) return "TOP"
-	if (id === 16842751) return "BOTTOM"
-	if (id > 16777217 && id < 16777217 + 31) return `MID-LAYER${id - 16777217}`
-	if (id > 16842751 && id < 16842751 + 17) return `PLANE${id - 16842751}`
-	return null
-}
+// V9 layer ids -> the scene's copper layer keys.
+export { copperKeyOfId }
 
 // The physical stack from the V9 records (masks, copper, dielectrics; overlays and paste have no
 // thickness). A board without one gets a 1.6 mm two-layer stack.

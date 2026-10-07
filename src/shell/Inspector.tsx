@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ChevronDown, ChevronRight, X } from "lucide-react"
 import { useAppStore, type Selection, type ViewTab } from "../app/store"
 import type { CompiledComponent, CompiledNet, CompiledProject } from "../model/compile"
@@ -11,7 +11,7 @@ import type { PcbObject, PcbScene } from "../pcb/scene"
 import { netSelection, pcbComponentIndex } from "../pcb/selection"
 import { usePcbScene } from "../pcb/use-scene"
 import { instanceLabel } from "../sch/interaction"
-import { prepareSheetSvg } from "../sch/prepare-svg"
+import { footprintSvg } from "../pcb/footprint-svg"
 
 const MM = 0.0254
 
@@ -37,7 +37,7 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 			const component = data.compiled.components.find(c => c.id === selection.id)
 			if (!component) return null
 			const placed = scene ? scene.components[pcbComponentIndex(scene, data.compiled, component.id)] : undefined
-			return <ComponentPanel {...views} pcb={data.pcb} component={component} footprintDescription={placed?.footprintDescription ?? ""} parser={parser} selection={selection} onClose={close} />
+			return <ComponentPanel {...views} pcb={data.pcb} scene={scene} component={component} footprintDescription={placed?.footprintDescription ?? ""} selection={selection} onClose={close} />
 		}
 		case "pcbNet":
 			return <BoardNetPanel pcb={data.pcb} name={selection.name} tab={tab} onClose={close} />
@@ -50,9 +50,10 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 			if (!c || !scene) return null
 			return (
 				<aside className="inspector" aria-label="Component properties">
-					<Head title={c.designator} onClose={close} views={["PCB", "3D"]} active={tabLabel(tab)} onView={v => (v === "PCB" ? useAppStore.getState().showOnPcb(selection) : useAppStore.getState().showOn3d(selection))} />
+					<Head title={c.designator} onClose={close} views={["PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => (v === "PCB" ? useAppStore.getState().showOnPcb(selection) : v === "3D" ? useAppStore.getState().showOn3d(selection) : useAppStore.getState().setTab("bom"))} />
 					{c.comment && <div className="inspector-heading">{c.comment}</div>}
 					<Section title="Footprint">
+						<FootprintPicture scene={scene} index={selection.index} label={`Footprint ${c.footprint}`} />
 						<div className="inspector-row">{c.footprint}</div>
 						{c.footprintDescription && <div className="inspector-desc">{c.footprintDescription}</div>}
 					</Section>
@@ -81,7 +82,7 @@ function Head({ title, onClose, views, active, onView }: { title: ReactNode; onC
 			</div>
 			<div className="inspector-views">
 				{views.map(v => (
-					<button key={v} className={v === active ? "on" : undefined} disabled={!onView || v === "BOM"} onClick={() => onView?.(v)}>
+					<button key={v} className={v === active ? "on" : undefined} disabled={!onView} onClick={() => onView?.(v)}>
 						{v}
 					</button>
 				))}
@@ -90,13 +91,14 @@ function Head({ title, onClose, views, active, onView }: { title: ReactNode; onC
 	)
 }
 
-const tabLabel = (tab: ViewTab) => (tab === "sch" ? "SCH" : tab === "pcb" ? "PCB" : "3D")
+const tabLabel = (tab: ViewTab) => (tab === "sch" ? "SCH" : tab === "pcb" ? "PCB" : tab === "bom" ? "BOM" : "3D")
 
 // SCH / PCB buttons: show the same selection in the other view (cross-probing).
 function crossProbe(view: string, selection: Selection, compiled: CompiledProject, activeSheetId: string | null) {
 	const store = useAppStore.getState()
 	if (view === "PCB") return store.showOnPcb(selection)
 	if (view === "3D") return store.showOn3d(selection)
+	if (view === "BOM") return store.setTab("bom") // the selection stays: its line is marked there
 	if (view !== "SCH") return
 	if (selection.kind === "net") {
 		const net = compiled.nets[selection.netId]
@@ -302,17 +304,17 @@ function Prop({ name, value }: { name: string; value: string }) {
 const PARAMS_SHOWN = 4
 const LINK = /^ComponentLink(\d+)(Description|URL)$/i
 
-function ComponentPanel({ tab, compiled, activeSheetId, pcb, component, footprintDescription, parser, selection, onClose }: Views & {
+function ComponentPanel({ tab, compiled, activeSheetId, pcb, scene, component, footprintDescription, selection, onClose }: Views & {
 	pcb: PcbData | null
+	scene: PcbScene | null
 	component: CompiledComponent
 	footprintDescription: string
-	parser: Parser
 	selection: Selection
 	onClose(): void
 }) {
 	const [more, setMore] = useState(false)
 	const placed = pcb?.components.find(c => c.sourceUniqueId === component.uniquePath)
-	const picture = useFootprintPicture(parser, pcb, placed ? component.uniquePath : null)
+	const placedIndex = scene ? scene.components.findIndex(c => c.sourceUniqueId === component.uniquePath) : -1
 	const layerColor = placed ? (pcb!.layers.find(l => l.name === placed.layer)?.color ?? (/bottom/i.test(placed.layer) ? "#0000ff" : "#ff0000")) : null
 	// Component links (datasheet, supplier pages) are listed as References, not parameters.
 	const links = new Map<string, { description?: string; url?: string }>()
@@ -335,7 +337,7 @@ function ComponentPanel({ tab, compiled, activeSheetId, pcb, component, footprin
 			{component.description && <div className="inspector-desc">{component.description}</div>}
 			{component.footprint && (
 				<Section title="Footprint">
-					{picture && <FootprintPicture markup={picture} label={`Footprint ${component.footprint}`} />}
+					{scene && placedIndex >= 0 && <FootprintPicture scene={scene} index={placedIndex} label={`Footprint ${component.footprint}`} />}
 					<div className="inspector-row">
 						<span className="grow">{component.footprint}</span>
 					</div>
@@ -404,46 +406,11 @@ function paramValue(value: string): ReactNode {
 	return v
 }
 
-// Footprint pictures are rendered by the worker from the board on first view, then cached per board.
-const picturesByBoard = new WeakMap<PcbData, Map<string, Promise<string | null>>>()
-
-function useFootprintPicture(parser: Parser, pcb: PcbData | null, sourcePath: string | null): string | null {
-	const [url, setUrl] = useState<string | null>(null)
-	useEffect(() => {
-		setUrl(null)
-		if (!sourcePath || !pcb) return
-		let pictures = picturesByBoard.get(pcb)
-		if (!pictures) picturesByBoard.set(pcb, (pictures = new Map()))
-		let current = true
-		let pending = pictures.get(sourcePath)
-		if (!pending) {
-			pending = parser.renderFootprintSvg(sourcePath).then(svg => (svg ? prepareSheetSvg(svg).markup : null))
-			pending.catch(() => pictures!.delete(sourcePath))
-			pictures.set(sourcePath, pending)
-		}
-		pending.then(u => current && setUrl(u), () => {})
-		return () => {
-			current = false
-		}
-	}, [parser, pcb, sourcePath])
-	return url
-}
-
-// The board renderer frames the whole board; crop to what was drawn (the one component) with a margin.
-function FootprintPicture({ markup, label }: { markup: string; label: string }) {
-	const host = useRef<HTMLDivElement>(null)
-	useEffect(() => {
-		const el = host.current
-		if (!el) return
-		el.innerHTML = markup
-		const svg = el.querySelector("svg")
-		const content = svg?.querySelector<SVGGElement>(":scope > g")
-		if (!svg || !content) return
-		svg.setAttribute("preserveAspectRatio", "xMidYMid meet")
-		const b = content.getBBox()
-		if (b.width <= 0 || b.height <= 0) return
-		const pad = Math.max(b.width, b.height) * 0.12
-		svg.setAttribute("viewBox", `${b.x - pad} ${b.y - pad} ${b.width + 2 * pad} ${b.height + 2 * pad}`)
-	}, [markup])
-	return <div ref={host} className="footprint-picture" role="img" aria-label={label} />
+// A part's footprint as designed (see footprint-svg.ts).
+function FootprintPicture({ scene, index, label }: { scene: PcbScene; index: number; label: string }) {
+	// The markup carries its own frame (the footprint's exact extent), so every part with the same
+	// footprint shows the same picture.
+	const markup = useMemo(() => footprintSvg(scene, index), [scene, index])
+	if (!markup) return null
+	return <div className="footprint-picture" role="img" aria-label={label} dangerouslySetInnerHTML={{ __html: markup }} />
 }

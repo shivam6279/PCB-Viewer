@@ -22,7 +22,7 @@ const project: ProjectSummary = {
 const node: HierarchyNode = { id: "Top.SchDoc", label: "Top.SchDoc", docPath: "Top.SchDoc", fileName: "Top.SchDoc", designator: null, displayDesignator: "Top", channel: null, cyclic: false, children: [] }
 
 function parser(render: Parser["renderSheetSvg"]): Parser {
-	return { parseProjectFile: vi.fn(), parseSheetLinks: vi.fn(), renderSheetSvg: render, buildProjectData: vi.fn(), renderFootprintSvg: vi.fn(), getPcbScene: vi.fn() }
+	return { parseProjectFile: vi.fn(), parseSheetLinks: vi.fn(), renderSheetSvg: render, buildProjectData: vi.fn(), getPcbScene: vi.fn() }
 }
 
 function source() {

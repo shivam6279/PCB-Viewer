@@ -10,7 +10,7 @@ export function zipTopLevel(dir: string, wrapper = "STM32"): Buffer {
 	const files: Record<string, Uint8Array> = {}
 	for (const name of readdirSync(dir)) {
 		const p = join(dir, name)
-		if (statSync(p).isFile() && /\.(prjpcb|schdoc|pcbdoc)$/i.test(name)) files[`${wrapper}/${name}`] = new Uint8Array(readFileSync(p))
+		if (statSync(p).isFile() && /\.(prjpcb|schdoc|pcbdoc|bomdoc)$/i.test(name)) files[`${wrapper}/${name}`] = new Uint8Array(readFileSync(p))
 	}
 	return Buffer.from(zipSync(files))
 }

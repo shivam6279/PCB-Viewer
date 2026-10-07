@@ -3,6 +3,7 @@
 import { AltiumRecord, type AltiumSchDoc } from "altiumts"
 import { getSchematicCoordinate, getSchematicIndexedPoints } from "../sch/render/altium-values"
 import { resolveSchematicParameterReferenceWithContext } from "../sch/render/schematic-parameter-reference"
+import { libraryItem } from "../model/library-item"
 import { ADDITIONAL_BASE, type Parameter, type Pt, type SheetComponent, type SheetData, type SheetObject, type SheetSymbol } from "../model/schematic-data"
 
 const ENTRY_STEP = 10
@@ -169,8 +170,11 @@ function extractComponent(document: AltiumSchDoc, component: AltiumRecord, i: nu
 		footprint: footprint?.getDecoded("MODELNAME") ?? "",
 		uniqueId: component.getDecoded("UNIQUEID") ?? "",
 		parameters,
+		libraryItem: libraryItem(component.getDecoded("SOURCELIBRARYNAME"), component.getDecoded("DATABASETABLENAME"), component.getDecoded("DESIGNITEMID") || component.getDecoded("LIBREFERENCE")),
+		kind: component.getNumber("COMPONENTKIND") ?? 0,
 	}
 }
+
 
 // Harness objects from the Additional stream. Entries (216) and type labels (217) belong to the
 // connector (215) before them, or to the one named by OWNERINDEX within the Additional list.

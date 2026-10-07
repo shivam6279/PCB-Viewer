@@ -36,6 +36,9 @@ export interface SheetComponent {
 	footprint: string
 	uniqueId: string
 	parameters: Parameter[]
+	// The library item it was placed from, as a BOM document names it: "<library>[/<table>]\<item>".
+	libraryItem?: string
+	kind?: number // the format's component kind: 2 graphical, 4 net tie and 5 standard are left out of a BOM
 }
 
 export interface SheetSymbol {

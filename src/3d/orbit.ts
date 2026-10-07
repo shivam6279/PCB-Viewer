@@ -21,14 +21,16 @@ const GRAZING = 1e-3 // |dir.z| below this: the centre line runs along the board
 // mid-plane (half-way through its thickness), so what is in the middle stays there while turning.
 // Seen edge-on, or with the middle of the screen off the board, it is the nearest point of that plane,
 // kept within the board's outline box so the pivot never runs off to infinity.
-export function pivotOf(view: OrbitView, board: OrbitBoard): THREE.Vector3 {
+// `line`: the whole centre line counts, behind the camera too (orthographic, where the camera's place
+// along its axis is arbitrary).
+export function pivotOf(view: OrbitView, board: OrbitBoard, line = false): THREE.Vector3 {
 	const q = view.quaternion
 	const origin = board.centre.clone().add(new THREE.Vector3(view.offset.x, view.offset.y, view.distance).applyQuaternion(q))
 	const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(q)
 	const z = board.centre.z
 	let p: THREE.Vector3
 	const s = Math.abs(dir.z) > GRAZING ? (z - origin.z) / dir.z : -1
-	if (s > 0) p = origin.clone().addScaledVector(dir, s)
+	if (s > 0 || (line && Math.abs(dir.z) > GRAZING)) p = origin.clone().addScaledVector(dir, s)
 	else {
 		// No crossing in front of the camera: the centre line's point nearest the board centre, on the plane.
 		const t = Math.max(0, board.centre.clone().sub(origin).dot(dir))

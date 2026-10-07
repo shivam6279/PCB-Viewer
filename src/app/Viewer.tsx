@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react"
 import { useAppStore } from "./store"
 import { TopBar } from "../shell/TopBar"
 import { ProjectTree } from "../shell/ProjectTree"
-import { DocBar } from "../shell/DocBar"
+import { DocBar, TAB_ORDER, tabEnabled } from "../shell/DocBar"
 import { loadView3d, ViewArea } from "../shell/ViewArea"
 import { Inspector } from "../shell/Inspector"
 import { workerParser } from "../parse/worker-parser"
@@ -27,6 +27,22 @@ export function Viewer() {
 	useEffect(() => {
 		if (source && project) void loadProjectData(source, project, parser)
 	}, [source, project, parser])
+
+	// 1-4: switch to SCH, PCB, 3D, BOM (when that tab has something to show), from anywhere but a text field.
+	const viewing = useAppStore(s => s.screen.kind === "viewer") // not parked behind the home screen
+	useEffect(() => {
+		if (!viewing || !project) return
+		const onKey = (e: KeyboardEvent) => {
+			if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat) return
+			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
+			const tab = TAB_ORDER[Number(e.key) - 1]
+			if (!tab || !/^[1-4]$/.test(e.key) || !tabEnabled(project, tab)) return
+			e.preventDefault()
+			useAppStore.getState().setTab(tab)
+		}
+		window.addEventListener("keydown", onKey)
+		return () => window.removeEventListener("keydown", onKey)
+	}, [viewing, project])
 
 	const primaryData = projectData.status === "ready" ? projectData.data : null
 	// Comparing: the mode bar shows the primary, the compared commit (secondary) or both (diff).

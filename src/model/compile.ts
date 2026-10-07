@@ -9,7 +9,7 @@
 // Nets confined to one channel get "_<channel index>" in their physical name, as on the PCB.
 import { sheetConnectivity, type SheetConnectivity } from "./connectivity"
 import { parseRepeat, type HierarchyNode } from "./hierarchy"
-import type { Parameter, SheetData } from "./schematic-data"
+import type { Parameter, SheetData, SheetSymbol } from "./schematic-data"
 
 export interface CompileInstance {
 	id: string
@@ -46,6 +46,8 @@ export interface CompiledComponent {
 	uniqueId: string
 	uniquePath: string // Altium's source path, e.g. "\1OCQKBGNW\SRADDCIC\BHDUXFNR"; links it to the PCB
 	parameters: Parameter[]
+	libraryItem?: string
+	kind?: number
 }
 
 export interface CompiledProject {
@@ -132,16 +134,26 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 	// Also builds each instance's unique path (symbol ids, a REPEAT symbol's prefixed by the channel).
 	const pathOf = new Map<string, string>()
 	for (const inst of instances) if (!inst.parentId) pathOf.set(inst.id, "")
+	// A sheet can place the same file twice under one designator (an unannotated copy): the children,
+	// in order, take those symbols in order, so each copy gets its own path. A REPEAT symbol places all
+	// its channels.
+	const claimed = new Set<SheetSymbol>()
+	const fileOf = (path: string) => (path.split(/[\\/]/).pop() ?? "").toLowerCase()
 	for (const child of instances) {
 		if (!child.parentId || !child.designator) continue
 		const parent = byId.get(child.parentId)!
 		const parentSheet = sheets.get(parent.docPath)
-		const symbol = parentSheet?.symbols.find(s => {
-			if (s.designator === child.designator) return true
-			const r = parseRepeat(s.designator)
-			return r !== null && Array.from({ length: r.last - r.first + 1 }, (_, k) => `${r.name}${r.first + k}`).includes(child.designator!)
-		})
+		const exact = parentSheet?.symbols.filter(s => s.designator === child.designator) ?? []
+		const symbol =
+			exact.find(s => !claimed.has(s) && fileOf(s.fileName) === fileOf(child.docPath)) ??
+			exact.find(s => !claimed.has(s)) ??
+			exact[0] ??
+			parentSheet?.symbols.find(s => {
+				const r = parseRepeat(s.designator)
+				return r !== null && Array.from({ length: r.last - r.first + 1 }, (_, k) => `${r.name}${r.first + k}`).includes(child.designator!)
+			})
 		if (!symbol) continue
+		if (exact.includes(symbol)) claimed.add(symbol)
 		const channelPrefix = parseRepeat(symbol.designator) && child.channel?.name === child.designator ? String(child.channel.index) : ""
 		pathOf.set(child.id, `${pathOf.get(parent.id) ?? ""}\\${channelPrefix}${symbol.uniqueId}`)
 		const pc = connectivityOf(parent.docPath)

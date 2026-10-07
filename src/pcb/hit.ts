@@ -2,7 +2,7 @@
 // other visible layers from the top), then the smallest component whose outline holds the point.
 // Pure: no DOM.
 import { drawOrder } from "./layers"
-import type { PcbObject, PcbScene, Prim } from "./scene"
+import { boxArea, boxContains, type PcbObject, type PcbScene, type Prim } from "./scene"
 
 const CELL = 100 // mils
 
@@ -82,8 +82,8 @@ export function componentAt(index: PcbIndex, x: number, y: number, isShown: (o: 
 	let best: { index: number; area: number } | null = null
 	for (const [i, c] of scene.components.entries()) {
 		const [x0, y0, x1, y1] = c.outline
-		if (x < x0 || x > x1 || y < y0 || y > y1) continue
-		const area = (x1 - x0) * (y1 - y0)
+		if (x < x0 || x > x1 || y < y0 || y > y1 || !boxContains(c.box, x, y)) continue
+		const area = boxArea(c.box)
 		if (best && area >= best.area) continue
 		if (!c.objects.some(id => { const o = scene.objects[id]!; return o.kind !== "text" && isShown(o) })) continue
 		best = { index: i, area }

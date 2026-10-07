@@ -141,6 +141,16 @@ button { font: inherit; color: inherit; }
 .view3d { position: relative; overflow: hidden; cursor: default; touch-action: none; user-select: none; background: #cccccc; }
 .view3d-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .view3d-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 10px; min-width: 240px; padding: 28px 32px; background: var(--bg-chrome); color: var(--text); border-radius: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35); font-size: var(--font-size-ui); }
+/* Perspective / Orthographic slider, over the canvas. Both halves are the same width, so the thumb
+   slides exactly one half. */
+.projection-toggle { position: absolute; z-index: 3; top: 12px; left: 12px; display: grid; grid-template-columns: 1fr 1fr; padding: 3px; border-radius: 16px; background: rgba(40, 40, 40, 0.82); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); backdrop-filter: blur(4px); font-size: var(--font-size-ui); user-select: none; transition: left 0.15s ease; }
+.projection-toggle.shifted { left: 251px; }
+.projection-toggle button { position: relative; z-index: 1; border: 0; background: none; color: var(--text-dim); font: inherit; padding: 5px 14px; border-radius: 13px; cursor: pointer; transition: color 0.18s ease; }
+.projection-toggle button:hover { color: var(--text); }
+.projection-toggle button[aria-checked="true"] { color: #fff; }
+.projection-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.projection-thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 13px; background: var(--accent); transition: transform 0.2s cubic-bezier(0.3, 0.7, 0.4, 1); }
+.projection-toggle[data-value="orthographic"] .projection-thumb { transform: translateX(100%); }
 .view3d-loading-count { color: var(--text-dim); }
 .view3d-spinner { width: 36px; height: 36px; border-radius: 50%; border: 3px solid rgba(106, 167, 230, 0.25); border-top-color: #6aa7e6; animation: view3d-spin 0.9s linear infinite; }
 @keyframes view3d-spin { to { transform: rotate(360deg); } }
@@ -316,3 +326,113 @@ button.commit-row:hover { background: var(--bg-raised); }
 .sign-in-card { margin: 16px auto 0; max-width: 720px; width: calc(100% - 48px); }
 .sign-in-card .card-title { display: flex; align-items: center; justify-content: space-between; }
 .welcome-legal { text-align: center; margin: 24px 0 0; font-size: var(--font-size-small); opacity: 0.7; }
+
+/* BOM tab */
+.bom-view { display: grid; grid-template-rows: auto 1fr; min-height: 0; min-width: 0; background: var(--bg-input); color: var(--text); font-size: var(--font-size-ui); }
+.bom-view.with-inspector { padding-right: 300px; }
+.bom-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-chrome); }
+.bom-summary { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.bom-counts { font-weight: 600; }
+.bom-source { color: var(--text-dim); font-size: var(--font-size-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bom-source b { color: var(--text); font-weight: 600; }
+.bom-filter { display: flex; align-items: center; gap: 6px; padding: 0 8px; height: 28px; border-radius: 4px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text-dim); }
+.bom-filter:focus-within { border-color: var(--accent); }
+.bom-filter input { width: 180px; background: none; border: 0; outline: none; color: var(--text); font: inherit; }
+.bom-export { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: 4px; background: var(--bg-raised); color: var(--text); font: inherit; cursor: pointer; }
+.bom-export:hover { background: #555; }
+.bom-scroll { overflow: auto; min-height: 0; }
+.bom-table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.bom-table th { position: sticky; top: 0; z-index: 1; background: var(--bg-chrome); color: var(--text-dim); font-weight: 600; font-size: var(--font-size-small); text-transform: uppercase; letter-spacing: 0.03em; text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.bom-table td { padding: 7px 10px; border-bottom: 1px solid #2c2c2c; vertical-align: top; }
+.bom-table tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.02); }
+.bom-table tbody tr:hover td { background: rgba(58, 117, 173, 0.12); }
+.bom-table .num { text-align: right; font-variant-numeric: tabular-nums; width: 1%; white-space: nowrap; color: var(--text-dim); }
+.bom-table th.num { text-align: right; }
+.bom-table .designators { min-width: 140px; max-width: 360px; }
+.bom-table .wide { min-width: 200px; }
+.bom-table tr.not-in-doc td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
+.bom-designator-item { white-space: nowrap; }
+.bom-designator { border: 0; padding: 0 2px; margin: 0 -2px; border-radius: 3px; background: none; color: #8fbbe6; font: inherit; cursor: pointer; }
+.bom-designator:hover:not(:disabled) { background: rgba(58, 117, 173, 0.25); color: #fff; }
+.bom-designator.on { background: var(--accent); color: #fff; }
+.bom-designator:disabled { color: inherit; cursor: default; }
+.bom-empty { padding: 24px; color: var(--text-dim); text-align: center; }
+
+/* PCB layer stack dialog */
+.stackup-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.45); }
+.stackup-dialog { display: grid; grid-template-rows: auto 1fr; max-height: 100%; width: min(920px, 100%); background: var(--bg-chrome); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); font-size: var(--font-size-ui); overflow: hidden; }
+.stackup-head { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 18px; border-bottom: 1px solid var(--border); }
+.stackup-title { font-size: 15px; font-weight: 600; }
+.stackup-summary { color: var(--text-dim); font-size: var(--font-size-small); margin-top: 2px; }
+.stackup-summary b { color: var(--text); font-weight: 600; }
+.stackup-head .icon { background: none; border: 0; color: var(--text-dim); cursor: pointer; padding: 4px; border-radius: 3px; display: grid; }
+.stackup-head .icon:hover { color: var(--text); background: var(--bg-raised); }
+.stackup-units { display: flex; padding: 2px; border-radius: 4px; background: var(--bg-input); border: 1px solid var(--border); }
+.stackup-units button { border: 0; background: none; color: var(--text-dim); font: inherit; padding: 2px 10px; border-radius: 3px; cursor: pointer; }
+.stackup-units button[aria-checked="true"] { background: var(--accent); color: #fff; }
+.stackup-scroll { overflow: auto; min-height: 0; }
+.stackup-table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.stackup-table th { position: sticky; top: 0; z-index: 1; background: var(--bg-chrome); color: var(--text-dim); font-weight: 600; font-size: var(--font-size-small); text-transform: uppercase; letter-spacing: 0.03em; text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.stackup-table td { height: 26px; padding: 0 10px; border-bottom: 1px solid #333; white-space: nowrap; }
+.stackup-table tr:hover td:not(.stackup-graphic) { background: rgba(58, 117, 173, 0.12); }
+.stackup-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.stackup-table tr[data-kind="core"] td:not(.stackup-graphic), .stackup-table tr[data-kind="prepreg"] td:not(.stackup-graphic) { color: #c9c9c9; }
+/* The cross-section: one band per row, edge to edge, so the bands stack into the board's section. */
+.stackup-graphic-head { width: 150px; }
+.stackup-table td.stackup-graphic { position: relative; width: 150px; padding: 0; border-bottom: 0; }
+.stackup-band { position: absolute; inset: 0 12px; display: block; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.25); }
+.stackup-band.overlay { background: linear-gradient(#fff6b0, #e8d95c); inset: 8px 12px; border-radius: 2px; }
+.stackup-band.paste { background: linear-gradient(#cfcfcf, #9b9b9b); inset: 8px 12px; border-radius: 2px; }
+.stackup-band.mask { background: linear-gradient(#4fbf7a, #2a8a50); }
+.stackup-band.signal, .stackup-band.plane { background: linear-gradient(#f0b25a, #c07a22); }
+.stackup-band.prepreg { background: repeating-linear-gradient(135deg, #cdb76a 0 6px, #c0a95d 6px 12px); }
+.stackup-band.core { background: repeating-linear-gradient(135deg, #a4904a 0 6px, #96823f 6px 12px); }
+.stackup-swatch { display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 2px; vertical-align: -1px; }
+
+/* PCB Layers/Objects panel: flip and layer mode */
+.pcb-layers-title { padding: 4px 4px; font-weight: 600; }
+.pcb-layers-section { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.pcb-flip { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-raised); cursor: pointer; text-align: left; }
+.pcb-flip:hover { border-color: #5a5a5a; }
+.pcb-flip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pcb-flip .grow { flex: 1; }
+.pcb-layers kbd, .pcb-legend kbd { font: inherit; font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid rgba(255, 255, 255, 0.25); color: var(--text-dim); }
+.pcb-flip.on kbd { color: #fff; border-color: rgba(255, 255, 255, 0.5); }
+.pcb-layers-label { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-size: var(--font-size-small); margin-bottom: 6px; }
+.pcb-modes { display: grid; gap: 2px; }
+.pcb-modes button { padding: 5px 10px; border: 0; border-radius: 3px; background: none; text-align: left; cursor: pointer; }
+.pcb-modes button:hover { background: var(--bg-raised); }
+.pcb-modes button[aria-checked="true"] { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
+
+/* PCB layer legend, over the board */
+.pcb-legend { position: absolute; z-index: 3; max-height: calc(100% - 24px); display: flex; flex-direction: column; background: rgba(28, 28, 28, 0.72); border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3); backdrop-filter: blur(6px); color: var(--text); font-size: 12px; user-select: none; }
+.pcb-legend.sized { max-height: none; }
+.pcb-legend.folded { width: auto !important; }
+.pcb-legend-head { cursor: move; }
+.pcb-legend-head button { cursor: pointer; }
+.pcb-legend-resize { position: absolute; z-index: 1; }
+.pcb-legend-resize.right { top: 0; right: -4px; bottom: 8px; width: 8px; cursor: ew-resize; }
+.pcb-legend-resize.bottom { left: 0; right: 8px; bottom: -4px; height: 8px; cursor: ns-resize; }
+.pcb-legend-resize.corner { right: -4px; bottom: -4px; width: 14px; height: 14px; cursor: nwse-resize; }
+.pcb-legend button { font: inherit; color: inherit; }
+.pcb-legend-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.pcb-legend-head .grow { flex: 1; }
+.pcb-legend-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 10px; background: rgba(255, 255, 255, 0.06); cursor: pointer; white-space: nowrap; }
+.pcb-legend-chip:hover { background: rgba(255, 255, 255, 0.14); }
+.pcb-legend-chip[data-mode="highlight"], .pcb-legend-chip[data-mode="only"], .pcb-legend-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pcb-legend-toggle { border: 0; background: none; cursor: pointer; color: var(--text-dim); display: grid; padding: 2px; }
+.pcb-legend-list { flex: 1; overflow: auto; min-height: 0; padding: 4px 0; }
+.pcb-legend-group-name { display: flex; align-items: center; gap: 3px; width: 100%; border: 0; background: none; padding: 6px 8px 2px; color: var(--text-dim) !important; font-size: 10px !important; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; text-align: left; }
+.pcb-legend-group-name:hover { color: var(--text) !important; }
+.pcb-legend-group-name .count { margin-left: 4px; opacity: 0.7; }
+.pcb-legend-row { display: flex; align-items: center; gap: 8px; height: 22px; margin: 0 4px; padding: 0 4px 0 6px; border-radius: 3px; cursor: pointer; }
+.pcb-legend-row:hover { background: rgba(255, 255, 255, 0.08); }
+.pcb-legend-row.current { background: rgba(58, 117, 173, 0.55); box-shadow: inset 2px 0 0 #8fbbe6; font-weight: 600; }
+.pcb-legend-row .swatch { flex: none; width: 12px; height: 12px; border-radius: 2px; border: 1px solid rgba(0, 0, 0, 0.4); }
+.pcb-legend-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcb-legend-row.off .swatch, .pcb-legend-row.off .name { opacity: 0.4; }
+.pcb-legend-row .eye { border: 0; background: none; cursor: pointer; display: grid; padding: 2px; color: var(--text-dim); }
+.pcb-legend-row .eye:hover { color: var(--text); }
+.pcb-legend-keys { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 6px 10px; border-top: 1px solid rgba(255, 255, 255, 0.12); color: var(--text-dim); font-size: 11px; }
+.pcb-mirror-badge { position: absolute; z-index: 3; top: 12px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 14px; border: 1px solid rgba(255, 200, 80, 0.6); background: rgba(40, 32, 10, 0.8); color: #ffd780; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; backdrop-filter: blur(4px); }
+.pcb-mirror-badge:disabled { cursor: default; }

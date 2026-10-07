@@ -1,6 +1,8 @@
 // altiumts binary PcbDoc -> plain data for the inspectors and the net compiler: components (where they
 // are), the net of every pad, and each net's routed length and copper layers.
 import { AltiumBinaryPcbDoc, parseAltiumFile } from "altiumts"
+import { libraryItem } from "../model/library-item"
+import { extractStackup, type StackupLayer } from "../pcb/stackup"
 
 export interface PcbComponent {
 	designator: string
@@ -10,6 +12,10 @@ export interface PcbComponent {
 	layer: string // "Top Layer" | "Bottom Layer"
 	footprint: string
 	sourceUniqueId: string
+	comment: string
+	description: string
+	libraryItem?: string // as on a schematic component (SheetComponent.libraryItem)
+	kind: number
 }
 
 export interface PcbLayer {
@@ -29,6 +35,7 @@ export interface PcbData {
 	padNets: [string, string][] // ["<component source path>|<pad>", net]; designators can repeat across channels
 	nets: PcbNet[]
 	layers: PcbLayer[]
+	stackup: StackupLayer[]
 }
 
 const MIL_TO_MM = 0.0254
@@ -85,6 +92,10 @@ export function extractPcb(source: Uint8Array | AltiumBinaryPcbDoc): PcbData {
 		layer: c.get?.("LAYER") === "BOTTOM" ? layerName("BOTTOM") : layerName("TOP"),
 		footprint: c.footprint ?? c.get?.("PATTERN") ?? "",
 		sourceUniqueId: c.sourceUniqueId ?? "",
+		comment: c.comment ?? "",
+		description: c.get?.("SOURCEDESCRIPTION") ?? "",
+		libraryItem: libraryItem(c.get?.("SOURCECOMPLIBRARYIDENTIFIER") || c.get?.("SOURCECOMPONENTLIBRARY"), undefined, c.get?.("SOURCELIBREFERENCE")),
+		kind: Number.parseInt(c.get?.("COMPONENTKIND") ?? "0", 10) || 0,
 	}))
 
 	const padNets: [string, string][] = []
@@ -131,5 +142,6 @@ export function extractPcb(source: Uint8Array | AltiumBinaryPcbDoc): PcbData {
 		padNets,
 		nets: [...byNet.values()],
 		layers: usedLayers.map(key => ({ key, name: layerName(key), color: layerColor(key) })),
+		stackup: extractStackup((doc.board?.items as { key: string; value: string }[] | undefined) ?? []),
 	}
 }

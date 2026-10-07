@@ -4,6 +4,7 @@ import type { ProjectSummary } from "../model/load-project"
 import type { Parser } from "../parse/parser"
 import { SchematicView } from "../sch/SchematicView"
 import { PcbView } from "../pcb/PcbView"
+import { BomView } from "../bom/BomView"
 import type { ProjectSource } from "../source/types"
 import { useAppStore, type ViewTab } from "../app/store"
 import { whenIdle } from "../app/idle"
@@ -23,7 +24,7 @@ export function ViewArea({ source, parser, project, tab, activeSheetId, activePc
 	activeSheetId: string | null
 	activePcbPath: string | null
 }) {
-	const view = tab === "sch" ? "Schematic" : tab === "pcb" ? "PCB" : "3D"
+	const view = tab === "sch" ? "Schematic" : tab === "pcb" ? "PCB" : tab === "bom" ? "BOM" : "3D"
 	const sheet = flattenHierarchy(project.hierarchy).find(n => n.id === activeSheetId)
 	const pcb = project.documents.find(d => d.path === activePcbPath)
 	const [opened, setOpened] = useState<Set<ViewTab>>(() => new Set([tab]))
@@ -60,6 +61,11 @@ export function ViewArea({ source, parser, project, tab, activeSheetId, activePc
 					) : (
 						<div className="view-message">No board</div>
 					)}
+				</div>
+			)}
+			{opened.has("bom") && (
+				<div className={pane("bom")}>
+					<BomView projectName={project.name} />
 				</div>
 			)}
 		</section>

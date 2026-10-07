@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { useAppStore } from "../app/store"
+import { useAppStore, type Projection3d } from "../app/store"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import type { Parser } from "../parse/parser"
 import { componentSelection, pcbComponentIndex, pcbHighlight } from "../pcb/selection"
@@ -23,6 +23,7 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 	const link = useRef<ViewLink<CameraState> | null>(null)
 	link.current = (pane.links?.view3d as ViewLink<CameraState> | undefined) ?? null
 	const panelOpen = useAppStore(s => s.view3dPanelOpen)
+	const projection = useAppStore(s => s.view3dProjection)
 	const data = projectData.status === "ready" ? projectData.data : null
 	const canvas = useRef<HTMLCanvasElement>(null)
 	const [loaded, setLoaded] = useState<Loaded3d | null | undefined>(undefined)
@@ -73,6 +74,7 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 		const unlink = shared?.subscribe((v, from) => from !== me && e.setView(v))
 		;(el as HTMLCanvasElement & { __view3d?: BoardEngine }).__view3d = e
 		for (const [key, mesh] of models) e.setModel(key, mesh)
+		e.setProjection(useAppStore.getState().view3dProjection)
 		if (shared?.last) e.setView(shared.last.value)
 		else if (saved?.camera) e.setView(saved.camera)
 		setObjects(saved?.objects ?? defaultObjects())
@@ -94,6 +96,10 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 		const entry = savedViews.get(scene)
 		if (entry) entry.objects = objects
 	}, [scene, objects])
+
+	useEffect(() => {
+		ready?.setProjection(projection)
+	}, [ready, projection])
 
 	useEffect(() => {
 		ready?.setHiddenKinds(objects.hiddenKinds)
@@ -168,6 +174,7 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 				</div>
 			)}
 			{status === "none" && <div className="view-message">This project has no board</div>}
+			{ready && <ProjectionToggle value={projection} shifted={panelOpen} />}
 			{ready && panelOpen && (
 				<ObjectsPanel
 					state={objects}
@@ -180,6 +187,27 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 					onClose={() => useAppStore.getState().setView3dPanelOpen(false)}
 				/>
 			)}
+		</div>
+	)
+}
+
+// Perspective / Orthographic, a two-way slider over the top left of the canvas (beside the Objects
+// panel when that is open).
+const PROJECTIONS: { id: Projection3d; label: string }[] = [
+	{ id: "perspective", label: "Perspective" },
+	{ id: "orthographic", label: "Orthographic" },
+]
+
+function ProjectionToggle({ value, shifted }: { value: Projection3d; shifted: boolean }) {
+	const set = useAppStore.getState().setView3dProjection
+	return (
+		<div className={`projection-toggle${shifted ? " shifted" : ""}`} role="radiogroup" aria-label="Projection" data-value={value}>
+			<span className="projection-thumb" aria-hidden="true" />
+			{PROJECTIONS.map(p => (
+				<button key={p.id} role="radio" aria-checked={value === p.id} onClick={() => set(p.id)}>
+					{p.label}
+				</button>
+			))}
 		</div>
 	)
 }
