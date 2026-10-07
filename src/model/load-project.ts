@@ -4,6 +4,7 @@ import { basename, dirname, extname, joinPath, normalizePath, PathIndex, stripEx
 import { isInSkippedDir } from "../source/skip"
 import type { ProjectSource } from "../source/types"
 import { buildHierarchy, type HierarchyNode } from "./hierarchy"
+import type { ProjectVariant } from "./variants"
 
 export type DocKind = "sch" | "pcb" | "other"
 
@@ -20,6 +21,7 @@ export interface ProjectSummary {
 	prjPath: string | null
 	parameters: Record<string, string>
 	channelDesignatorFormat: string
+	variants: ProjectVariant[] // assembly variants, in the project's order
 	documents: DocEntry[]
 	hierarchy: HierarchyNode[]
 }
@@ -45,6 +47,7 @@ export async function loadProject(source: ProjectSource, prjPath: string | null,
 	let name = source.name
 	let parameters: Record<string, string> = {}
 	let channelDesignatorFormat = "$Component_$RoomName"
+	let variants: ProjectVariant[] = []
 	let baseDir = ""
 	let rawPaths: string[]
 	if (prjPath !== null) {
@@ -52,6 +55,7 @@ export async function loadProject(source: ProjectSource, prjPath: string | null,
 		name = stripExt(prjPath)
 		parameters = project.parameters
 		channelDesignatorFormat = project.channelDesignatorFormat
+		variants = project.variants ?? []
 		baseDir = dirname(prjPath)
 		rawPaths = project.documentPaths
 	} else rawPaths = await findLooseDocuments(source)
@@ -96,5 +100,5 @@ export async function loadProject(source: ProjectSource, prjPath: string | null,
 	}
 
 	const hierarchy = buildHierarchy({ sheets: sheets.map(d => d.path), linksBySheet, resolve })
-	return { name, prjPath, parameters, channelDesignatorFormat, documents, hierarchy }
+	return { name, prjPath, parameters, channelDesignatorFormat, variants, documents, hierarchy }
 }

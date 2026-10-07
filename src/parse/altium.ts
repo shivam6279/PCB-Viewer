@@ -2,11 +2,13 @@
 // Runs both in the parse worker and in Node tests.
 import { AltiumSchDoc, parseAltiumCompoundFile, parseAltiumFile, parseAltiumPrjPcb, parseAltiumSchDoc, type AltiumRecord } from "altiumts"
 import { serializeAltiumSheetToSvg } from "../sch/render/serialize-altium-sheet-to-svg"
+import { parseVariants, type ProjectVariant } from "../model/variants"
 
 export interface ProjectFile {
 	documentPaths: string[]
 	parameters: Record<string, string>
 	channelDesignatorFormat: string
+	variants?: ProjectVariant[]
 }
 
 export interface SheetLink {
@@ -43,6 +45,7 @@ export function parseProjectFile(bytes: Uint8Array): ProjectFile {
 		documentPaths: project.documents.map(d => d.path),
 		parameters,
 		channelDesignatorFormat: format || "$Component_$RoomName",
+		variants: parseVariants(text),
 	}
 }
 

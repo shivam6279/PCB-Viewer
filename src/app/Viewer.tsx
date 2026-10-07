@@ -19,6 +19,7 @@ export function Viewer() {
 	const screen = useAppStore(s => (s.screen.kind === "viewer" ? s.screen : (s.parked ?? s.screen)))
 	const projectData = useAppStore(s => s.projectData)
 	const selection = useAppStore(s => s.selection)
+	const variant = useAppStore(s => s.variant)
 	const { setScreen, setTab, selectSheet, selectPcb } = useAppStore.getState()
 	const parser = useMemo(() => workerParser(), [])
 	const source = screen.kind === "viewer" ? screen.source : null
@@ -128,6 +129,8 @@ export function Viewer() {
 				activeNetId={selection?.kind === "net" ? selection.netId : null}
 				onSelectNet={selectNet}
 				changes={compare?.files ?? null}
+				activeVariant={variant}
+				onSelectVariant={useAppStore.getState().setVariant}
 			/>
 			<main className="main">
 				<DocBar project={shown.project} tab={tab} activeSheetId={activeSheetId} onTab={setTab} onSelectSheet={selectSheet} right={modeBar} />

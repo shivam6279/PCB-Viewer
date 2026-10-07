@@ -11,6 +11,7 @@ const project: ProjectSummary = {
 	prjPath: "Board.PrjPcb",
 	parameters: {},
 	channelDesignatorFormat: "",
+	variants: [],
 	documents: [
 		{ path: "Top.SchDoc", name: "Top.SchDoc", kind: "sch", exists: true, error: null },
 		{ path: "ESC.SchDoc", name: "ESC.SchDoc", kind: "sch", exists: true, error: "corrupt sheet" },
@@ -63,4 +64,22 @@ test("collapsing a node hides its children", () => {
 	renderTree()
 	fireEvent.click(screen.getByLabelText("Collapse Top.SchDoc"))
 	expect(screen.queryByText("ESC.SchDoc (U_ESC1)")).toBeNull()
+})
+
+test("the Variants folder lists [No Variations] and each variant, the shown one ticked", () => {
+	const onSelectVariant = vi.fn()
+	const withVariants = { ...project, variants: [{ name: "Main", notFitted: [] }, { name: "Lite", notFitted: [] }] }
+	render(<ProjectTree project={withVariants} activeSheetId={null} activePcbPath={null} onSelectSheet={vi.fn()} onSelectPcb={vi.fn()} activeVariant="Main" onSelectVariant={onSelectVariant} />)
+	expect(screen.getByText("Variants")).toBeTruthy()
+	expect(screen.getByText("Main").closest(".tree-row")!.classList.contains("checked")).toBe(true)
+	expect(screen.getByText("[No Variations]").closest(".tree-row")!.classList.contains("checked")).toBe(false)
+	fireEvent.click(screen.getByText("[No Variations]"))
+	expect(onSelectVariant).toHaveBeenCalledWith(null)
+	fireEvent.click(screen.getByText("Lite"))
+	expect(onSelectVariant).toHaveBeenCalledWith("Lite")
+})
+
+test("no Variants folder when the project has none", () => {
+	renderTree()
+	expect(screen.queryByText("Variants")).toBeNull()
 })

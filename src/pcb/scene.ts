@@ -60,10 +60,8 @@ export interface PcbSceneComponent {
 	side: "top" | "bottom"
 	objects: number[] // object ids it owns
 	bbox: [number, number, number, number] // everything it owns but text, for framing
-	// The box drawn on hover/selection and picked by: the extent of everything the footprint owns
-	// except text (pads, silkscreen, courtyard/mechanical, body), measured in the footprint's own
-	// frame (as placed at 0°) and turned with it: four corners, x,y each. On an 0805 the box sits
-	// 12.8 / 10.8 mil outside the pads = the silkscreen outline.
+	// The box drawn on hover/selection and picked by (see fitPartBox): four corners, x,y each. Updated
+	// in place once the 3D models are in, so a selection holding it redraws with the fitted box.
 	box: number[]
 	outline: [number, number, number, number] // the box's axis-aligned extent
 }
@@ -213,9 +211,7 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 	if (!Number.isFinite(bounds[0])) bounds = objects.reduce((b, o) => unionBox(b, o.bbox), [Infinity, Infinity, -Infinity, -Infinity] as PcbObject["bbox"])
 
 	for (const c of components) {
-		const prims = c.objects.flatMap(id => (objects[id]!.kind === "text" ? [] : objects[id]!.prims))
-		c.box = rotatedBox(prims, c.x, c.y, c.rotation) ?? cornersOf(c.bbox)
-		c.outline = boxOfRing(c.box)
+		fitPartBox(c, objects)
 	}
 	return { origin, bounds, outline, cutouts, layers: buildLayers(layerKeys, boardItems), objects, components }
 
@@ -328,6 +324,30 @@ function buildLayers(keys: Set<string>, boardItems: { key: string; value: string
 	}
 	return out.sort((a, b) => a.stack - b.stack)
 }
+
+// How far a part's box stands off its copper and body (mils; 0.25 mm).
+const BOX_MARGIN = 10
+
+// A part's box: the extent of the part itself, its copper (pads and any copper the footprint owns) and
+// its bodies, measured in the footprint's own frame (as placed at 0°) and turned with it, standing
+// BOX_MARGIN off all round so it reads as a frame rather than sitting on the pad edges. Silkscreen,
+// courtyard and the other mechanical layers are left out: they are drawn with margins around the part.
+// The bodies are the outlines the footprint stores, unless `bodies` gives better ones (rings of x,y:
+// the outlines of the 3D models themselves, which a library may have drawn far larger). A footprint
+// with neither copper nor body falls back to everything it owns but text.
+export function fitPartBox(c: PcbSceneComponent, objects: PcbObject[], bodies?: number[][]) {
+	const owned = c.objects.map(id => objects[id]!).filter(o => o.kind !== "text")
+	const copper = owned.filter(o => o.kind !== "body" && isCopperLayer(o.layer)).flatMap(o => o.prims)
+	const outlines: Prim[] = bodies ? bodies.map(ring => ({ t: "poly", rings: [ring] })) : owned.filter(o => o.kind === "body").flatMap(o => o.prims)
+	const part = [...copper, ...outlines]
+	const box = rotatedBox(part.length ? part : owned.flatMap(o => o.prims), c.x, c.y, c.rotation, BOX_MARGIN) ?? cornersOf(c.bbox)
+	c.box.splice(0, c.box.length, ...box)
+	const [x0, y0, x1, y1] = boxOfRing(box)
+	Object.assign(c.outline, [x0, y0, x1, y1])
+}
+
+// Copper: the outer and inner signal layers, planes, and Multi-Layer (through-hole pads).
+const isCopperLayer = (layer: string) => /^(TOP|BOTTOM|MULTILAYER|MID-?LAYER\d+|MID\d+|PLANE\d+)$/.test(layer)
 
 // Via start/end layers may use the short names (MID1); primitives use MID-LAYER1.
 function copperKey(layer: string): string {
@@ -448,9 +468,9 @@ export function primsBox(prims: Prim[]): [number, number, number, number] {
 }
 
 // The extent of some shapes in a frame turned by `deg` about (cx, cy), as the four corners of that
-// rectangle back in board coordinates (null: nothing to measure). Strokes keep their width; arcs are
-// measured along their sweep.
-export function rotatedBox(prims: Prim[], cx: number, cy: number, deg: number): number[] | null {
+// rectangle back in board coordinates (null: nothing to measure), grown by `margin` all round.
+// Strokes keep their width; arcs are measured along their sweep.
+export function rotatedBox(prims: Prim[], cx: number, cy: number, deg: number, margin = 0): number[] | null {
 	const a = (deg * Math.PI) / 180
 	const cos = Math.cos(a), sin = Math.sin(a)
 	let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity
@@ -477,6 +497,10 @@ export function rotatedBox(prims: Prim[], cx: number, cy: number, deg: number): 
 		else if (p.t === "poly") for (const ring of p.rings) for (let k = 0; k + 1 < ring.length; k += 2) grow(ring[k]!, ring[k + 1]!, 0)
 	}
 	if (!Number.isFinite(u0)) return null
+	u0 -= margin
+	v0 -= margin
+	u1 += margin
+	v1 += margin
 	const back = (u: number, v: number) => [cx + u * cos - v * sin, cy + u * sin + v * cos]
 	return [...back(u0, v0), ...back(u1, v0), ...back(u1, v1), ...back(u0, v1)]
 }

@@ -9,7 +9,7 @@ import { drawLabels } from "./labels"
 import { buildIndex, componentAt, hitTest, objectsIn, type PcbIndex } from "./hit"
 import { LayersPanel } from "./LayersPanel"
 import { componentSelection, netSelection, pcbHighlight } from "./selection"
-import type { PcbObject, PcbScene } from "./scene"
+import type { PcbObject, PcbScene, PcbSceneComponent } from "./scene"
 import { usePcbScene } from "./use-scene"
 import { StackupDialog } from "./StackupDialog"
 import { LayerLegend } from "./LayerLegend"
@@ -119,12 +119,19 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const isShown = (o: PcbObject) =>
 			!layers.hiddenKinds.has(o.kind) && (only ? o.layer === only || (onlyCopper && spans(o, only)) : layers.visible.has(o.layer))
 		const isCurrent = (o: PcbObject) => o.layer === layers.current || spans(o, layers.current)
+		// What is labelled, hovered and picked: in highlight mode only what is on the current layer (the
+		// rest of the board is greyed out), else everything shown.
+		const isActive = layers.mode === "highlight" ? (o: PcbObject) => isShown(o) && isCurrent(o) : isShown
+		// The layer the view is focused on, if any: the one shown on its own, or the highlighted one.
+		const focus = only ?? (layers.mode === "highlight" ? layers.current : null)
 		return {
 			isShown,
 			isCurrent,
-			// What is labelled, hovered and picked: in highlight mode only what is on the current layer (the
-			// rest of the board is greyed out), else everything shown.
-			isActive: layers.mode === "highlight" ? (o: PcbObject) => isShown(o) && isCurrent(o) : isShown,
+			isActive,
+			// What makes a part hoverable and pickable: the same, except that its through-hole pads, which
+			// pass through every copper layer, don't put it on the outer layer of the other side. A
+			// bottom-side lens holder held by two through-hole pads is not a part on Top.
+			isPartActive: (o: PcbObject, part: PcbSceneComponent) => isActive(o) && !(o.span && focus === (part.side === "top" ? "BOTTOM" : "TOP")),
 		}
 	}, [scene, layers])
 	labelRules.current = rules
@@ -216,6 +223,12 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		if (selectedBox.current) drawComponentBox(ctx, cam, selectedBox.current, true)
 		return cx - w / 2 <= 0 && cy - h / 2 <= 0 && cx + w / 2 >= el.width && cy + h / 2 >= el.height
 	}
+	// The part boxes are fitted to the 3D models once those are in (see fitBoxesToModels): repaint the
+	// hovered and selected boxes, which are drawn on the live view.
+	const modelsIn = useAppStore(s => s.view3dPrepared)
+	useEffect(() => {
+		if (modelsIn) blit.current()
+	}, [modelsIn])
 	// Redraw when what is shown changes. While another tab is showing, the redraw waits for idle time
 	// (a selection made in SCH or 3D must not stall on this view); it runs at once if the tab comes back
 	// first, and coming back with nothing changed draws nothing.
@@ -411,6 +424,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		return hitTest(idx, p.x, p.y, {
 			tolerance: (HIT_PX * (window.devicePixelRatio || 1)) / cam.scale,
 			isShown: rules.isActive,
+			isPartShown: rules.isPartActive,
 			current: layers.current,
 			side: layers.flip ? "bottom" : "top",
 		})
@@ -434,7 +448,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const hoverRef = useRef<(p: { x: number; y: number } | null) => void>(() => {})
 	hoverRef.current = p => {
 		const idx = index.current
-		const next = p && idx && rules ? componentAt(idx, p.x, p.y, rules.isActive) : null
+		const next = p && idx && rules ? componentAt(idx, p.x, p.y, rules.isPartActive) : null
 		if (next === hoverComponent.current) return
 		hoverComponent.current = next
 		blit.current()

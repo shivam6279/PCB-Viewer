@@ -8,6 +8,7 @@ const project: ProjectSummary = {
 	prjPath: "Board.PrjPcb",
 	parameters: {},
 	channelDesignatorFormat: "$Component_$ChannelIndex",
+	variants: [],
 	documents: [
 		{ path: "Top.SchDoc", name: "Top.SchDoc", kind: "sch", exists: true, error: null },
 		{ path: "Board.PcbDoc", name: "Board.PcbDoc", kind: "pcb", exists: true, error: null },
@@ -52,4 +53,14 @@ test("leaving the viewer parks it as it was; returning restores it; a new projec
 	s.setScreen({ kind: "start", error: null })
 	s.showProject(new MemorySource("y", []), { ...project, name: "Other" })
 	expect(useAppStore.getState()).toMatchObject({ screen: { kind: "viewer", tab: "sch" }, parked: null, selection: null })
+})
+
+test("a project opens on its first variant, else [No Variations]", () => {
+	const s = useAppStore.getState()
+	s.showProject(new MemorySource("x", []), { ...project, variants: [{ name: "Main", notFitted: [] }, { name: "Lite", notFitted: [] }] })
+	expect(useAppStore.getState().variant).toBe("Main")
+	s.setVariant(null)
+	expect(useAppStore.getState().variant).toBeNull()
+	s.showProject(new MemorySource("y", []), project)
+	expect(useAppStore.getState().variant).toBeNull()
 })

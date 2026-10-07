@@ -274,19 +274,27 @@ test("on Top only, bottom-side parts cannot be picked", async ({ page }) => {
 		pcb.view((c.outline[0] + c.outline[2]) / 2, (c.outline[1] + c.outline[3]) / 2, pcb.camera().scale * 8)
 	}, p.index)
 	const q = await partPoint(page, BOTTOM_PART)
+	const designator = await page.evaluate(i => (document.querySelector(".pcb-canvas") as any).__pcb.scene.components[i].designator, p.index)
 	await page.mouse.move(q.x, q.y)
 	await page.mouse.click(q.x, q.y)
 	await page.waitForTimeout(200)
-	await expect(page.getByRole("complementary", { name: "Component properties" })).toHaveCount(0)
+	// (A Top part over the same spot may be picked instead; the bottom one never is.)
+	await expect(page.getByRole("complementary", { name: "Component properties" }).getByText(designator, { exact: true })).toHaveCount(0)
 	expect(await page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())).not.toBe(p.index)
 })
 
 test("double-clicking a track selects its whole net", async ({ page }) => {
 	await openCubliPcb(page)
 	const TRACK = `s.objects.filter(o => o.kind === "track" && o.net && o.layer === "TOP" && (p => { const h = (document.querySelector(".pcb-canvas")).__pcb.pick((p.x1 + p.x2) / 2, (p.y1 + p.y2) / 2); return h && h.kind === "object" && h.id === o.id })(o.prims[0])).sort((a, b) => b.length - a.length)[0]`
-	await zoomTo(page, TRACK, 4)
-	const p = await clientOf(page, TRACK)
-	const net = await page.evaluate(src => new Function("s", `return (${src}).net`)((document.querySelector(".pcb-canvas") as any).__pcb.scene), TRACK)
+	// Framed in the middle of the view: the panel the first click opens must not cover the second.
+	const { p, net } = await page.evaluate(src => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const o = new Function("s", `return (${src})`)(pcb.scene)
+		const x = (o.prims[0].x1 + o.prims[0].x2) / 2, y = (o.prims[0].y1 + o.prims[0].y2) / 2
+		pcb.view(x, y, pcb.camera().scale * 4)
+		return { p: pcb.toClient(x, y), net: o.net as string }
+	}, TRACK)
+	await page.waitForTimeout(100)
 	await page.mouse.dblclick(p.x, p.y)
 	const panel = page.getByRole("complementary", { name: "Net properties" })
 	await expect(panel).toBeVisible()
@@ -416,6 +424,22 @@ test("a turned part's box turns with it (measured as placed at 0°)", async ({ p
 	await shot(page, "pcb-rotated-box")
 })
 
+test("a part's box stands a little off its copper and 3D body; silkscreen and courtyard are left out", async ({ page }) => {
+	await openCubliPcb(page)
+	const size = (d: string) =>
+		page.evaluate(d => {
+			const b = (document.querySelector(".pcb-canvas") as any).__pcb.scene.components.find((c: any) => c.designator === d).box
+			return [Math.round(Math.hypot(b[2] - b[0], b[3] - b[1])), Math.round(Math.hypot(b[4] - b[2], b[5] - b[3]))]
+		}, d)
+	// Each stands 10 mil off its copper and body.
+	// C37 (100 µF can): pad to pad across, the body's depth (352 x 268). Its courtyard is 394 x 310.
+	expect(await size("C37")).toEqual([372, 288])
+	// J1_ESC (MR30): its body (472 x 197). Courtyard 482 x 206.
+	expect(await size("J1_ESC")).toEqual([492, 217])
+	// D4_ESC (0402, no body): its two pads (43 x 28), not the silkscreen 18 mil around them.
+	expect(await size("D4_ESC")).toEqual([63, 48])
+})
+
 test("highlight mode: vias keep their brown hole, ringed in the current layer's colour", async ({ page }) => {
 	await openCubliPcb(page)
 	await page.evaluate(() => {
@@ -458,9 +482,15 @@ test("highlight mode: only what is on the current layer can be hovered and picke
 		const [x0, y0, x1, y1] = c.outline
 		pcb.view((x0 + x1) / 2, (y0 + y1) / 2, ((document.querySelector(".pcb-canvas") as HTMLCanvasElement).height * 0.4) / (y1 - y0))
 		const b = c.box
-		// Inside its box near a corner, clear of its pads.
+		// Inside its box towards a corner, on the part itself: clear of its pads and of the vias
+		// tucked against its pin ring.
 		const mx = (b[0] + b[4]) / 2, my = (b[1] + b[5]) / 2
-		return { index: i, at: pcb.toClient(mx + (b[0] - mx) * 0.9, my + (b[1] - my) * 0.9) }
+		for (let f = 0.95; f > 0.3; f -= 0.01) {
+			const x = mx + (b[0] - mx) * f, y = my + (b[1] - my) * f
+			const hit = pcb.pick(x, y)
+			if (hit?.kind === "component" && hit.index === i) return { index: i, at: pcb.toClient(x, y) }
+		}
+		throw new Error("no point on U13_ESC picks the part")
 	})
 	const hovered = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
 	await page.mouse.move(part.at.x, part.at.y)
@@ -483,4 +513,50 @@ test("highlight mode: only what is on the current layer can be hovered and picke
 	await expect.poll(hovered).toBe(part.index)
 	await page.mouse.click(part.at.x, part.at.y)
 	await expect(page.locator(".inspector")).toContainText("U13_ESC")
+})
+
+test("highlighting the other side's outer layer: a part held by through-hole pads is not on it", async ({ page }) => {
+	await page.goto("/")
+	await page.getByTestId("zip-input").setInputFiles({ name: "Camera.zip", mimeType: "application/zip", buffer: zipTopLevel(join(CORPUS, "PnP/Camera"), "Camera") })
+	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
+	await page.getByRole("tab", { name: "PCB" }).click()
+	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
+	// MP1: a bottom-side lens holder, two through-hole mounting pads; a point inside it clear of them.
+	const part = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const i = pcb.scene.components.findIndex((c: any) => c.designator === "MP1")
+		const c = pcb.scene.components[i]
+		const [x0, y0, x1, y1] = c.outline
+		pcb.view((x0 + x1) / 2, (y0 + y1) / 2, ((document.querySelector(".pcb-canvas") as HTMLCanvasElement).height * 0.6) / (y1 - y0))
+		const b = c.box, mx = (b[0] + b[4]) / 2, my = (b[1] + b[5]) / 2
+		for (let f = 0.9; f > 0.1; f -= 0.02) {
+			const hit = pcb.pick(mx + (b[0] - mx) * f, my + (b[1] - my) * f)
+			if (hit?.kind === "component" && hit.index === i) return { side: c.side, index: i, at: pcb.toClient(mx + (b[0] - mx) * f, my + (b[1] - my) * f) }
+		}
+		throw new Error("no point on MP1 picks the part")
+	})
+	expect(part.side).toBe("bottom")
+	const hovered = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
+	const current = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().current as string)
+	const hover = async () => {
+		await page.mouse.move(part.at.x + 2, part.at.y + 2)
+		await page.mouse.move(part.at.x, part.at.y)
+	}
+	await hover()
+	await expect.poll(hovered).toBe(part.index)
+
+	// Top highlighted: its pads pass through Top, but the part is not on it.
+	expect(await current()).toBe("TOP")
+	await page.keyboard.press("Shift+S")
+	await hover()
+	await expect.poll(hovered).toBeNull()
+	await page.mouse.click(part.at.x, part.at.y)
+	await page.waitForTimeout(200)
+	await expect(page.getByRole("complementary", { name: "Component properties" })).toHaveCount(0)
+
+	// Bottom highlighted: it is.
+	for (let k = 0; k < 40 && (await current()) !== "BOTTOM"; k++) await page.keyboard.press("-")
+	expect(await current()).toBe("BOTTOM")
+	await hover()
+	await expect.poll(hovered).toBe(part.index)
 })

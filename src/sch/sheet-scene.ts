@@ -18,6 +18,7 @@ export interface Scene {
 	overlay: SVGGElement
 	paper: Box
 	byIndex: Map<number, SVGGElement>
+	notFitted: SVGGElement // red crosses over the shown variant's not-fitted parts, under the overlay
 	ownerBoxes: Map<number, Box> | null // lazily measured: owner record -> union of its parts
 }
 
@@ -41,10 +42,13 @@ export function createScene(svg: SVGSVGElement): Scene | null {
 			g.appendChild(hit)
 		}
 
+	const notFitted = document.createElementNS(SVG_NS, "g")
+	notFitted.setAttribute("class", "sch-not-fitted")
+	content.appendChild(notFitted)
 	const overlay = document.createElementNS(SVG_NS, "g")
 	overlay.setAttribute("class", "sch-overlay")
 	content.appendChild(overlay)
-	return { svg, content, overlay, paper, byIndex, ownerBoxes: null }
+	return { svg, content, overlay, notFitted, paper, byIndex, ownerBoxes: null }
 }
 
 const readHit = (g: Element): Hit => {
@@ -118,6 +122,27 @@ export function unionBox(elements: Iterable<SVGGraphicsElement>): Box | null {
 export function ownerElements(scene: Scene, o: number): SVGGElement[] {
 	const own = scene.byIndex.get(o)
 	return [...(own ? [own] : []), ...scene.content.querySelectorAll<SVGGElement>(`g[data-o="${o}"]`)]
+}
+
+// Parts a variant leaves off: everything drawn for them greyed (class not-fitted), and a red cross
+// corner to corner over the body (its outline without texts). Replaces the previous marking.
+export function markNotFitted(scene: Scene, owners: number[]) {
+	for (const g of scene.content.querySelectorAll(".not-fitted")) g.classList.remove("not-fitted")
+	scene.notFitted.replaceChildren()
+	for (const o of owners) {
+		for (const g of ownerElements(scene, o)) g.classList.add("not-fitted")
+		const b = ownerBoxes(scene).get(o)
+		if (!b) continue
+		for (const [x1, y1, x2, y2] of [[b.x, b.y, b.x + b.w, b.y + b.h], [b.x, b.y + b.h, b.x + b.w, b.y]]) {
+			const line = document.createElementNS(SVG_NS, "line")
+			line.setAttribute("x1", String(x1))
+			line.setAttribute("y1", String(y1))
+			line.setAttribute("x2", String(x2))
+			line.setAttribute("y2", String(y2))
+			line.setAttribute("data-o", String(o))
+			scene.notFitted.appendChild(line)
+		}
+	}
 }
 
 export interface OverlayState {

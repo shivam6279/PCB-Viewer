@@ -11,6 +11,7 @@ const base: ProjectSummary = {
 	prjPath: null,
 	parameters: {},
 	channelDesignatorFormat: "",
+	variants: [],
 	documents: [{ path: "Top.SchDoc", name: "Top.SchDoc", kind: "sch", exists: true, error: null }],
 	hierarchy: [
 		{

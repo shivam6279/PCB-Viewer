@@ -65,6 +65,8 @@ interface AppState {
 	projectData: ProjectDataState
 	selection: Selection | null
 	focus: Focus | null
+	// The assembly variant shown (its name); null = "[No Variations]". A project opens on its first variant.
+	variant: string | null
 	pcbFocusSeq: number // bumped when the PCB view should frame the selection
 	pcbPanelOpen: boolean
 	pcbStackupOpen: boolean
@@ -83,6 +85,7 @@ interface AppState {
 	selectPcb(path: string): void
 	setProjectData(state: ProjectDataState): void
 	select(selection: Selection | null): void
+	setVariant(variant: string | null): void
 	// Opens a sheet instance framed on some of its objects, keeping (or setting) the selection.
 	jumpTo(instanceId: string, objects: number[], selection?: Selection | null): void
 	// Shows the PCB view framed on a selection.
@@ -121,6 +124,7 @@ export const useAppStore = create<AppState>((set, get) => {
 		projectData: { status: "loading" },
 		selection: null,
 		focus: null,
+		variant: null,
 		pcbFocusSeq: 0,
 		pcbPanelOpen: false, // the Layers/Objects panel starts closed; its doc-bar button toggles it
 		pcbStackupOpen: false,
@@ -159,6 +163,7 @@ export const useAppStore = create<AppState>((set, get) => {
 				projectData: { status: "loading" },
 				selection: null,
 				focus: null,
+				variant: project.variants?.[0]?.name ?? null,
 				view3dPrepared: false,
 			})
 		},
@@ -167,6 +172,7 @@ export const useAppStore = create<AppState>((set, get) => {
 		selectPcb: path => updateViewer({ tab: "pcb", activePcbPath: path }),
 		setProjectData: projectData => set({ projectData }),
 		select: selection => set({ selection }),
+		setVariant: variant => set({ variant }),
 		showOnPcb(selection) {
 			set({ selection, pcbFocusSeq: get().pcbFocusSeq + 1 })
 			updateViewer({ tab: "pcb" })

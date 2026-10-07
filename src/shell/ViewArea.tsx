@@ -56,7 +56,7 @@ export function ViewArea({ source, parser, project, tab, activeSheetId, activePc
 				<div className={pane("3d")}>
 					{pcb ? (
 						<Suspense fallback={<div className="view-message">Loading board…</div>}>
-							<View3d parser={parser} active={tab === "3d"} readBoard={() => source.read(pcb.path)} />
+							<View3d parser={parser} active={tab === "3d"} readBoard={() => source.read(pcb.path)} variants={project.variants} />
 						</Suspense>
 					) : (
 						<div className="view-message">No board</div>

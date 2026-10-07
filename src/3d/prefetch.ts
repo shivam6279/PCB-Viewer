@@ -11,6 +11,7 @@ import { pcbScene } from "../pcb/use-scene"
 import type { Board3d } from "./board3d"
 import type { BoardGeometry, GeoMesh } from "./board-geometry"
 import type { BoardWorkerApi } from "./board.worker"
+import { fitBoxesToModels } from "./model-outline"
 import { stepMesh, type StepMesh } from "./step-mesh"
 
 export interface Loaded3d {
@@ -56,6 +57,8 @@ export function load3d(parser: Parser, data: ProjectData, readBoard: () => Promi
 		)
 		const geometry = await remote.geometry()
 		await modelsDone
+		// The PCB view's part boxes, fitted to the models now that they are in (it redraws on view3dPrepared).
+		fitBoxesToModels(scene, board, models)
 		return { scene, board, geometry, models, highlight: ids => remote.highlight(ids) }
 	})()
 	load = { done, progress }

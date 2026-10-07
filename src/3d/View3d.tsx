@@ -7,6 +7,7 @@ import type { PcbScene } from "../pcb/scene"
 import { BoardEngine, type CameraState } from "./engine"
 import { ObjectsPanel, type Objects3dState } from "./ObjectsPanel"
 import { load3d, type Loaded3d } from "./prefetch"
+import { notFittedPaths, type ProjectVariant } from "../model/variants"
 
 // The camera and Objects settings per board, kept with the board.
 const savedViews = new WeakMap<PcbScene, { camera: CameraState | null; objects: Objects3dState }>()
@@ -15,7 +16,7 @@ let consumedFocus = 0
 const defaultObjects = (): Objects3dState => ({ side: null, hiddenKinds: new Set() })
 
 // The 3D tab. It stays mounted once opened (tab switches only hide it), so coming back is instant.
-export function View3d({ parser, active, readBoard }: { parser: Parser; active: boolean; readBoard(): Promise<Uint8Array> }) {
+export function View3d({ parser, active, readBoard, variants }: { parser: Parser; active: boolean; readBoard(): Promise<Uint8Array>; variants?: ProjectVariant[] }) {
 	const pane = usePane()
 	const projectData = usePaneData()
 	const selection = usePaneSelection()
@@ -24,6 +25,7 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 	link.current = (pane.links?.view3d as ViewLink<CameraState> | undefined) ?? null
 	const panelOpen = useAppStore(s => s.view3dPanelOpen)
 	const projection = useAppStore(s => s.view3dProjection)
+	const variant = useAppStore(s => s.variant)
 	const data = projectData.status === "ready" ? projectData.data : null
 	const canvas = useRef<HTMLCanvasElement>(null)
 	const [loaded, setLoaded] = useState<Loaded3d | null | undefined>(undefined)
@@ -104,6 +106,16 @@ export function View3d({ parser, active, readBoard }: { parser: Parser; active: 
 	useEffect(() => {
 		ready?.setHiddenKinds(objects.hiddenKinds)
 	}, [ready, objects.hiddenKinds])
+
+	// The shown variant's not-fitted parts are left off the board.
+	useEffect(() => {
+		if (!ready || !scene) return
+		const off = notFittedPaths(variants, variant)
+		const hidden = new Set<number>()
+		scene.components.forEach((c, i) => off.has(c.sourceUniqueId.toUpperCase()) && hidden.add(i))
+		ready.setNotFitted(hidden)
+		canvas.current?.setAttribute("data-not-fitted", String(hidden.size))
+	}, [ready, scene, variants, variant])
 
 	const highlight = useMemo(() => (scene && data ? pcbHighlight(scene, selection, data.compiled) : null), [scene, selection, data])
 	const selectedComponents = useMemo(() => {

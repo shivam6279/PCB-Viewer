@@ -94,7 +94,7 @@ export function DiffArea({ tab, activeSheetId, activePcbPath, a, b, files }: {
 	const board = (s: DiffSide, path: string | undefined) =>
 		path ? (
 			<Suspense fallback={<div className="view-message">Loading board…</div>}>
-				<View3d parser={s.parser} active readBoard={() => s.source.read(path)} />
+				<View3d parser={s.parser} active readBoard={() => s.source.read(path)} variants={s.project.variants} />
 			</Suspense>
 		) : (
 			missing("No board in this commit")

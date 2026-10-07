@@ -1,8 +1,11 @@
 import { useState, type ReactNode } from "react"
-import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, TriangleAlert } from "lucide-react"
 import type { HierarchyNode } from "../model/hierarchy"
 import type { DocEntry, ProjectSummary } from "../model/load-project"
 import type { FileChange } from "../diff/diff"
+
+// The row that shows the design without any variant's changes.
+export const NO_VARIATIONS = "[No Variations]"
 
 const CHANGE_LETTER: Record<FileChange, string> = { modified: "M", added: "A", removed: "D" }
 const CHANGE_WORD: Record<FileChange, string> = { modified: "Changed", added: "Added", removed: "Deleted" }
@@ -19,9 +22,12 @@ export interface ProjectTreeProps {
 	onSelectNet?(id: number): void
 	// Comparing commits: how each document differs (badge M / A / D on its row).
 	changes?: Map<string, FileChange> | null
+	// The assembly variant shown (null = "[No Variations]"); the Variants folder lists the project's.
+	activeVariant?: string | null
+	onSelectVariant?(variant: string | null): void
 }
 
-export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectSheet, onSelectPcb, nets, activeNetId, onSelectNet, changes }: ProjectTreeProps) {
+export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectSheet, onSelectPcb, nets, activeNetId, onSelectNet, changes, activeVariant = null, onSelectVariant }: ProjectTreeProps) {
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set(["nets"]))
 	const toggle = (id: string) =>
 		setCollapsed(prev => {
@@ -39,13 +45,14 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 		problem?: string | null
 		onClick?: () => void
 		docPath?: string | null
+		checked?: boolean
 	}): ReactNode => {
 		const change = opts.docPath ? changes?.get(opts.docPath) : undefined
 		const open = !collapsed.has(key)
 		return (
 			<div
 				key={key}
-				className={`tree-row${opts.active ? " active" : ""}`}
+				className={`tree-row${opts.active ? " active" : ""}${opts.checked ? " checked" : ""}`}
 				style={{ paddingLeft: 8 + depth * 18 }}
 				aria-disabled={opts.disabled ? "true" : undefined}
 				onClick={opts.disabled ? undefined : opts.onClick}
@@ -71,6 +78,7 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 						{CHANGE_LETTER[change]}
 					</span>
 				)}
+				{opts.checked && <Check size={13} className="tree-check" aria-label="Shown" />}
 				{opts.problem && (
 					<span className="tree-warn" title={opts.problem}>
 						<TriangleAlert size={13} />
@@ -99,12 +107,20 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 	}
 
 	const pcbs = project.documents.filter(d => d.kind === "pcb")
+	const variants = project.variants ?? []
 	const others = project.documents.filter(d => d.kind === "other")
 
 	return (
 		<nav className="sidebar" aria-label="Project">
 			<div className="sidebar-heading">PROJECT</div>
 			{row("design", 0, "Design", "folder", { hasChildren: true })}
+			{!collapsed.has("design") && variants.length > 0 && row("variants", 1, "Variants", "folder", { hasChildren: true })}
+			{!collapsed.has("design") &&
+				!collapsed.has("variants") &&
+				variants.length > 0 &&
+				[null, ...variants.map(v => v.name)].map(name =>
+					row(`variant:${name ?? ""}`, 2, name ?? NO_VARIATIONS, "variant", { checked: name === activeVariant, onClick: () => onSelectVariant?.(name) }),
+				)}
 			{!collapsed.has("design") && row("source", 1, "Source Documents", "folder", { hasChildren: true })}
 			{!collapsed.has("design") && !collapsed.has("source") && (
 				<>

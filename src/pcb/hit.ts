@@ -2,7 +2,7 @@
 // other visible layers from the top), then the smallest component whose outline holds the point.
 // Pure: no DOM.
 import { drawOrder } from "./layers"
-import { boxArea, boxContains, type PcbObject, type PcbScene, type Prim } from "./scene"
+import { boxArea, boxContains, type PcbObject, type PcbScene, type PcbSceneComponent, type Prim } from "./scene"
 
 const CELL = 100 // mils
 
@@ -49,6 +49,9 @@ export interface HitOptions {
 	// Whether an object is shown in the current layer view (layer visible, or a via/through-hole pad that
 	// passes through the layer shown on its own). Hidden objects are never picked.
 	isShown(o: PcbObject): boolean
+	// Whether an object makes its part hoverable and pickable (default: isShown). A through-hole pad is
+	// on every copper layer, but it does not put a bottom-side part on Top (see PcbView's rules).
+	isPartShown?(o: PcbObject, part: PcbSceneComponent): boolean
 	current: string
 	side: "top" | "bottom"
 }
@@ -68,7 +71,7 @@ export function hitTest(index: PcbIndex, x: number, y: number, opts: HitOptions)
 
 	const pad = topmost(candidates.filter(o => o.kind === "pad" || o.kind === "via"))
 	if (pad) return { kind: "object", id: pad.id }
-	const component = componentAt(index, x, y, opts.isShown)
+	const component = componentAt(index, x, y, opts.isPartShown ?? opts.isShown)
 	if (component !== null) return { kind: "component", index: component }
 	const track = topmost(candidates.filter(o => o.kind === "track" || o.kind === "arc").filter(o => scene.layers.find(l => l.key === o.layer)?.group === "copper"))
 	if (track) return { kind: "object", id: track.id }
@@ -77,7 +80,7 @@ export function hitTest(index: PcbIndex, x: number, y: number, opts: HitOptions)
 
 // The smallest component whose outline (3D body / pads) holds the point, among those with something shown in the
 // current layer view.
-export function componentAt(index: PcbIndex, x: number, y: number, isShown: (o: PcbObject) => boolean): number | null {
+export function componentAt(index: PcbIndex, x: number, y: number, isShown: (o: PcbObject, part: PcbSceneComponent) => boolean): number | null {
 	const { scene } = index
 	let best: { index: number; area: number } | null = null
 	for (const [i, c] of scene.components.entries()) {
@@ -85,7 +88,7 @@ export function componentAt(index: PcbIndex, x: number, y: number, isShown: (o: 
 		if (x < x0 || x > x1 || y < y0 || y > y1 || !boxContains(c.box, x, y)) continue
 		const area = boxArea(c.box)
 		if (best && area >= best.area) continue
-		if (!c.objects.some(id => { const o = scene.objects[id]!; return o.kind !== "text" && isShown(o) })) continue
+		if (!c.objects.some(id => { const o = scene.objects[id]!; return o.kind !== "text" && isShown(o, c) })) continue
 		best = { index: i, area }
 	}
 	return best?.index ?? null

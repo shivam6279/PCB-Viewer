@@ -16,6 +16,7 @@ const project: ProjectSummary = {
 	prjPath: "Board.PrjPcb",
 	parameters: {},
 	channelDesignatorFormat: "",
+	variants: [],
 	documents: [{ path: "Top.SchDoc", name: "Top.SchDoc", kind: "sch", exists: true, error: null }],
 	hierarchy: [],
 }

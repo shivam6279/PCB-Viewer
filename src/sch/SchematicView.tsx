@@ -9,7 +9,8 @@ import type { ProjectSource } from "../source/types"
 import { buildPortMenu, classifyClick, jumpObjects, type ClickAction, type MenuNode } from "./interaction"
 import { PortMenu } from "./PortMenu"
 import { prepareSheetSvg } from "./prepare-svg"
-import { createScene, frameObjects, hitTest, paintOverlay, type Scene } from "./sheet-scene"
+import { createScene, frameObjects, hitTest, markNotFitted, paintOverlay, type Scene } from "./sheet-scene"
+import { notFittedPaths } from "../model/variants"
 import { fitView, panBy, zoomAt, type Size, type ViewBox } from "./viewport"
 
 type Prepared = ReturnType<typeof prepareSheetSvg>
@@ -68,6 +69,7 @@ export function SchematicView({ source, project, node, parser }: {
 	const projectData = usePaneData()
 	const selection = usePaneSelection()
 	const storeFocus = useAppStore(s => s.focus)
+	const variant = useAppStore(s => s.variant)
 	const focus = pane.diff ? null : storeFocus
 	const link = pane.links?.sch as ViewLink<ViewBox> | undefined
 	const mark = pane.mark
@@ -237,6 +239,16 @@ export function SchematicView({ source, project, node, parser }: {
 		}
 		sc.content.insertBefore(bands, sc.content.firstChild)
 	}, [state, data, node.id])
+
+	// The shown variant's not-fitted parts: greyed, with a red cross over the body.
+	useEffect(() => {
+		const sc = scene.current
+		if (!sc || state.status !== "ready") return
+		const off = notFittedPaths(project.variants, variant)
+		const owners = off.size === 0 ? [] : (data?.compiled.components ?? []).filter(c => c.instanceId === node.id && off.has(c.uniquePath.toUpperCase())).map(c => c.i)
+		markNotFitted(sc, owners)
+		frame.current?.setAttribute("data-not-fitted", String(owners.length))
+	}, [state, data, project.variants, variant, node.id])
 
 	// Hover and selection overlay.
 	useEffect(() => {

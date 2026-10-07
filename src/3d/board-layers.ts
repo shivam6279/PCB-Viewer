@@ -1,5 +1,5 @@
 // The layered board (board-geometry.ts) as three.js meshes, coloured from the board's own 3D
-// configuration: copper, dielectric bands (core / prepreg) at the edge, the dielectric's faces in the
+// configuration: copper, the dielectric edge (one translucent band in the core colour), the dielectric's faces in the
 // mask colour (they are only ever seen through the mask), translucent masks with a sheen, silkscreen,
 // plated barrels. Every material dims with a selection elsewhere.
 import * as THREE from "three"
@@ -14,7 +14,9 @@ export interface BoardLayers {
 	materials: THREE.Material[]
 }
 
-const mix = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+// How much of the board's edge the dielectric covers: the copper layers inside show through as
+// slabs of their own thickness, muted by the resin in front of them.
+const EDGE_OPACITY = 0.6
 
 export function geometryOf(m: GeoMesh): THREE.BufferGeometry {
 	const g = new THREE.BufferGeometry()
@@ -29,15 +31,16 @@ export function geometryOf(m: GeoMesh): THREE.BufferGeometry {
 
 export function buildBoardLayers(meshes: GeoMesh[], c: Board3dColors, dimmer: Dimmer): BoardLayers {
 	const phong = (color: Rgb, extra: THREE.MeshPhongMaterialParameters = {}) => dimmable(new THREE.MeshPhongMaterial({ color: srgb(color), specular: 0x000000, ...extra }), dimmer)
-	const copper = phong(c.copper)
+	// Copper slabs: faces in the copper colour, side walls a shade darker (copperShade), so a layer's
+	// thickness reads under the even lighting.
+	const copper = phong(c.copper, { vertexColors: true })
 	// The plating in a hole is the same copper as the pads around it: unlit, in the copper colour, only
 	// shaded round the wall (barrelShade) so it reads as a tube.
 	const barrel = dimmable(new THREE.MeshBasicMaterial({ color: srgb(c.copper), vertexColors: true, side: THREE.DoubleSide }), dimmer)
-	// The board's edge: each dielectric translucent at its configured opacity (core 0.85, prepreg 0.5
-	// over the core colour), so the copper planes inside show through the edge.
-	const band = (color: Rgb, opacity: number) => phong(color, { side: THREE.DoubleSide, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 })
-	const core = band(c.core, c.coreOpacity)
-	const prepreg = band(mix(c.core, c.prepreg, c.prepregOpacity), Math.max(c.coreOpacity, c.prepregOpacity))
+	// The board's edge: every dielectric, core and prepreg alike, in the core colour at EDGE_OPACITY (or
+	// the board's own core opacity, if lower).
+	const opacity = Math.min(c.coreOpacity, EDGE_OPACITY)
+	const edge = phong(c.core, { side: THREE.DoubleSide, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 })
 	const npth = phong(c.core, { side: THREE.DoubleSide })
 	// The board's own faces are bare FR4 in the core colour: what a mask opening without copper shows,
 	// and what the translucent mask tints everywhere else.
@@ -61,7 +64,7 @@ export function buildBoardLayers(meshes: GeoMesh[], c: Board3dColors, dimmer: Di
 				material = barrel
 				break
 			case "dielectric":
-				material = m.layer === "SURFACE-TOP" ? surfaceTop : m.layer === "SURFACE-BOTTOM" ? surfaceBottom : m.layer === "NPTH" ? npth : m.core ? core : prepreg
+				material = m.layer === "SURFACE-TOP" ? surfaceTop : m.layer === "SURFACE-BOTTOM" ? surfaceBottom : m.layer === "NPTH" ? npth : edge
 				break
 			case "mask":
 				material = m.layer === "TOPSOLDER" ? maskTop : maskBottom
@@ -72,13 +75,24 @@ export function buildBoardLayers(meshes: GeoMesh[], c: Board3dColors, dimmer: Di
 		}
 		const geometry = geometryOf(m)
 		if (m.role === "barrel") barrelShade(geometry)
+		if (m.role === "copper") copperShade(geometry)
 		const mesh = new THREE.Mesh(geometry, material)
 		mesh.userData = { role: m.role, layer: m.layer, kind: m.kind }
 		mesh.matrixAutoUpdate = false
 		group.add(mesh)
 		out.push(mesh)
 	}
-	return { group, meshes: out, materials: [copper, barrel, core, prepreg, npth, surfaceTop, surfaceBottom, maskTop, maskBottom, silkTop, silkBottom] }
+	return { group, meshes: out, materials: [copper, barrel, edge, npth, surfaceTop, surfaceBottom, maskTop, maskBottom, silkTop, silkBottom] }
+}
+
+// A copper slab's side walls, a shade under its faces.
+const COPPER_WALL_SHADE = 0.72
+
+function copperShade(g: THREE.BufferGeometry) {
+	const n = g.getAttribute("normal") as THREE.BufferAttribute
+	const colors = new Float32Array(n.count * 3)
+	for (let i = 0; i < n.count; i++) colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = Math.abs(n.getZ(i)) > 0.5 ? 1 : COPPER_WALL_SHADE
+	g.setAttribute("color", new THREE.BufferAttribute(colors, 3))
 }
 
 // Light on a barrel wall from one side across the hole (the side the board's brighter side light comes

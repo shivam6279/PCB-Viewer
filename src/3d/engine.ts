@@ -76,6 +76,7 @@ export class BoardEngine {
 	private view: CameraState
 	private autoFit = true // still on the opening view: re-fitted when the canvas gets its real size
 	private selected: Set<number> | null = null
+	private notFitted = new Set<number>() // components the shown variant leaves off: no body
 	private frameRequest = 0
 	private active = true // the 3D tab is showing (else frames wait for idle time, see setActive)
 	private pendingIdle: (() => void) | null = null
@@ -142,6 +143,13 @@ export class BoardEngine {
 		this.requestRender()
 	}
 
+	// The shown variant's not-fitted parts (component indexes): their bodies are not drawn or picked.
+	setNotFitted(components: Set<number>) {
+		this.notFitted = components
+		for (const mesh of this.parts.children) mesh.visible = !components.has(mesh.userData.component as number)
+		this.requestRender()
+	}
+
 	// A model has arrived (or failed: null): place every body that uses it.
 	setModel(key: string, mesh: StepMesh | null) {
 		for (const b of this.data.bodies) if (b.model === key) this.addBody(b, mesh, mesh === null)
@@ -152,6 +160,7 @@ export class BoardEngine {
 		const mesh = failed ? failedBody(b, this.frame, this.mats) : bodyMesh(b, this.frame, this.mats, step)
 		if (!mesh) return
 		mesh.userData = { component: b.component, body: b, failed }
+		mesh.visible = b.component === null || !this.notFitted.has(b.component)
 		if (!mesh.geometry.boundsTree) mesh.geometry.computeBoundsTree() // STEP geometries are shared: once each
 		this.parts.add(mesh)
 		this.paint(mesh)
@@ -483,7 +492,7 @@ export class BoardEngine {
 
 	private pickable(): THREE.Object3D[] {
 		const out: THREE.Object3D[] = this.board.meshes.filter(m => m.visible)
-		if (this.parts.visible) out.push(...this.parts.children)
+		if (this.parts.visible) out.push(...this.parts.children.filter(m => m.visible))
 		return out
 	}
 

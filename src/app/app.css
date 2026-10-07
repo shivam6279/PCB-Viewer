@@ -35,7 +35,9 @@ button { font: inherit; color: inherit; }
 .tree-chevron { width: 16px; display: inline-flex; justify-content: center; background: none; border: 0; padding: 0; cursor: pointer; color: var(--text-dim); }
 .tree-icon { width: 14px; height: 11px; border-radius: 2px; flex: none; }
 .tree-icon.sch, .tree-icon.folder { background: var(--doc-folder); }
-.tree-icon.pcb { background: var(--doc-pcb); }
+.tree-icon.pcb, .tree-icon.variant { background: var(--doc-pcb); }
+.tree-row.checked .tree-label { font-weight: 600; }
+.tree-check { margin-left: auto; flex: none; color: var(--text); }
 .tree-icon.other { background: var(--text-disabled); }
 .tree-icon.net { height: 2px; border-radius: 0; background: var(--text-dim); }
 .tree-label { overflow: hidden; text-overflow: ellipsis; }
@@ -75,6 +77,11 @@ button { font: inherit; color: inherit; }
 .list .dim { color: var(--text-dim); margin-left: 8px; }
 /* Hairlines (exported at 0.3 units) are one screen pixel at every zoom. */
 .sch-host [stroke-width="0.3"] { stroke-width: 1px; vector-effect: non-scaling-stroke; }
+
+/* A variant's not-fitted parts: light grey, crossed out in red. */
+.sch-host g.not-fitted:not(g.not-fitted g) { filter: grayscale(1); opacity: 0.3; }
+.sch-not-fitted { pointer-events: none; }
+.sch-not-fitted line { stroke: #e0201b; stroke-width: 4; stroke-linecap: butt; }
 
 /* Schematic interaction. */
 .sch-host .hit { stroke: transparent; stroke-width: 8px; vector-effect: non-scaling-stroke; fill: none; pointer-events: stroke; }
