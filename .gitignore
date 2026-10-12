@@ -14,3 +14,6 @@ public/index/
 # Private, never committed: design notes and local agent instructions
 notes/
 CLAUDE.local.md
+
+# TypeScript incremental build cache
+*.tsbuildinfo

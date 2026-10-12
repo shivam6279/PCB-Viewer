@@ -121,6 +121,26 @@ button { font: inherit; color: inherit; }
 .port-menu-chevron { width: 16px; display: inline-grid; place-items: center; background: none; border: 0; color: inherit; padding: 0; cursor: pointer; }
 .port-menu-label { overflow: hidden; text-overflow: ellipsis; }
 
+/* The board's right-click menu: what is under the cursor, then the nets there. */
+.pick-menu { min-width: 260px; max-width: 480px; max-height: 70vh; }
+.pick-menu-section { padding: 6px 10px 2px; color: var(--text-dim); font-size: var(--font-size-small); border-top: 1px solid var(--border); margin-top: 4px; }
+.pick-menu-row { display: flex; align-items: baseline; gap: 10px; height: var(--row-height); line-height: var(--row-height); padding: 0 12px 0 10px; white-space: nowrap; cursor: pointer; }
+.pick-menu-row:hover { background: var(--bg-raised); }
+.pick-menu-row.current { background: var(--bg-selected); }
+.pick-menu-kind { flex: none; width: 52px; color: var(--text-dim); font-size: var(--font-size-small); }
+.pick-menu-label { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
+.pick-menu-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+
+/* Project search (top-bar icon, Ctrl+F): a panel hanging under the right end of the top bar. */
+.search-palette { position: fixed; z-index: 60; top: calc(var(--topbar-height) - 6px); right: 16px; width: min(440px, calc(100vw - 32px)); padding: 6px; background: var(--bg-chrome); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); font-size: var(--font-size-ui); }
+.search-hits { max-height: min(420px, 60vh); overflow: auto; margin-top: 6px; }
+.search-hit { display: flex; align-items: baseline; gap: 10px; height: var(--row-height); line-height: var(--row-height); padding: 0 8px; border-radius: 3px; white-space: nowrap; cursor: pointer; }
+.search-hit.active { background: var(--bg-selected); }
+.search-kind { flex: none; width: 36px; color: var(--text-dim); font-size: var(--font-size-small); }
+.search-label { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.search-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+.search-empty { padding: 6px 8px; color: var(--text-dim); }
+
 /* The inspector floats over the view: opening it never resizes or shifts the drawing. */
 .main-body { position: relative; display: grid; grid-template-columns: 1fr; min-height: 0; min-width: 0; }
 .inspector { position: absolute; z-index: 6; top: 0; right: 0; bottom: 0; width: 300px; background: var(--bg-chrome); border-left: 1px solid var(--border); overflow: auto; font-size: var(--font-size-ui); }
@@ -172,6 +192,25 @@ button { font: inherit; color: inherit; }
 .projection-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .projection-thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px); border-radius: 13px; background: var(--accent); transition: transform 0.2s cubic-bezier(0.3, 0.7, 0.4, 1); }
 .projection-toggle[data-value="orthographic"] .projection-thumb { transform: translateX(100%); }
+/* The view cube: see-through, turned with the board; a face click turns the view to it, a drag turns
+   the board; arrows (on hover) turn about one view axis. The faces are depth-sorted in 3D (preserve-3d). */
+.view-cube { position: absolute; z-index: 3; top: 8px; right: 8px; width: calc(var(--cube) * 2.4); height: calc(var(--cube) * 2.4); user-select: none; touch-action: none; }
+.view-cube-box { position: absolute; inset: calc(var(--cube) * 0.45); transform-style: preserve-3d; cursor: grab; }
+.view-cube.dragging .view-cube-box { cursor: grabbing; }
+.view-cube-face { position: absolute; left: 50%; top: 50%; width: var(--cube); height: var(--cube); margin: calc(var(--cube) / -2) 0 0 calc(var(--cube) / -2); padding: 0; border: 1px solid rgba(255, 255, 255, 0.55); border-radius: 2px; background: rgba(48, 52, 60, calc(0.22 + 0.3 * var(--facing, 1))); color: #f2f4f7; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); font: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; cursor: inherit; transition: background-color 0.12s ease; }
+.view-cube-face[data-side="back"] { pointer-events: none; color: transparent; text-shadow: none; background: rgba(48, 52, 60, 0.08); border-color: rgba(255, 255, 255, 0.22); }
+.view-cube-face[data-side="front"]:hover { background: color-mix(in srgb, var(--accent) 70%, transparent); color: #fff; }
+.view-cube-face[data-facing="true"] { border-color: rgba(255, 255, 255, 0.8); }
+.view-cube-face:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.view-cube-arrow { position: absolute; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 11px; background: rgba(40, 40, 40, 0.75); color: #e8eaee; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 0.15s ease, background-color 0.12s ease; }
+.view-cube:hover .view-cube-arrow, .view-cube.dragging .view-cube-arrow, .view-cube-arrow:focus-visible { opacity: 1; pointer-events: auto; }
+.view-cube-arrow:hover { background: var(--accent); color: #fff; }
+.view-cube-arrow[data-arrow="up"] { top: 0; left: calc(50% - 11px); }
+.view-cube-arrow[data-arrow="down"] { bottom: 0; left: calc(50% - 11px); }
+.view-cube-arrow[data-arrow="left"] { left: 0; top: calc(50% - 11px); }
+.view-cube-arrow[data-arrow="right"] { right: 0; top: calc(50% - 11px); }
+.view-cube-arrow[data-arrow="ccw"] { top: 6px; left: 6px; }
+.view-cube-arrow[data-arrow="cw"] { top: 6px; right: 6px; }
 .view3d-loading-count { color: var(--text-dim); }
 .view3d-spinner { width: 36px; height: 36px; border-radius: 50%; border: 3px solid rgba(106, 167, 230, 0.25); border-top-color: #6aa7e6; animation: view3d-spin 0.9s linear infinite; }
 @keyframes view3d-spin { to { transform: rotate(360deg); } }
@@ -180,6 +219,13 @@ button { font: inherit; color: inherit; }
 .objects-3d-side { border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 6px; }
 .objects-3d .pcb-layer-row.hidden .kind-icon { opacity: 0.45; }
 .objects-3d-title { padding: 4px 0; }
+.objects-3d-parts { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+.objects-3d-parts .pcb-layer-row { cursor: pointer; }
+.objects-3d-parts .pcb-layer-row.selected { background: var(--bg-raised); font-weight: 600; }
+.objects-3d-parts .pcb-layer-row .eye { visibility: visible; }
+.inspector-actions { display: flex; gap: 6px; padding: 4px 14px 8px; }
+.inspector-action { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-raised); color: var(--text); font: inherit; cursor: pointer; }
+.inspector-action:hover { border-color: #5a5a5a; }
 .docbar-tool { display: inline-flex; align-items: center; gap: 6px; height: 100%; background: none; border: 0; padding: 0 10px; cursor: pointer; color: var(--text); font: inherit; }
 .docbar-tool.on { background: var(--bg-selected); }
 .pcb-layers { position: absolute; z-index: 4; top: 0; left: 0; bottom: 0; width: 248px; display: flex; flex-direction: column; background: var(--bg-chrome); color: var(--text); border-right: 1px solid var(--border); font-size: var(--font-size-ui); cursor: default; }
@@ -233,9 +279,9 @@ button { font: inherit; color: inherit; }
 .home-brand { display: flex; align-items: center; gap: 12px; line-height: 1.35; min-width: 0; }
 .home-brand-name { font-weight: 600; }
 .home-logo { width: 30px; height: 30px; border-radius: 6px; flex: none; background: linear-gradient(135deg, var(--doc-pcb) 0 50%, var(--accent) 50% 100%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); }
-.home-search input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: inherit; outline: none; }
-.home-search input::placeholder { color: var(--text-dim); }
-.home-search:focus-within { box-shadow: 0 0 0 1px var(--accent); }
+.home-search input, .search-palette input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: inherit; outline: none; }
+.home-search input::placeholder, .search-palette input::placeholder { color: var(--text-dim); }
+.home-search:focus-within, .search-palette .topbar-search:focus-within { box-shadow: 0 0 0 1px var(--accent); }
 .home-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
 .btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .btn:disabled { opacity: 0.55; cursor: default; }
@@ -457,3 +503,6 @@ button.commit-row:hover { background: var(--bg-raised); }
 .pcb-legend-keys { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 6px 10px; border-top: 1px solid rgba(255, 255, 255, 0.12); color: var(--text-dim); font-size: 11px; }
 .pcb-mirror-badge { position: absolute; z-index: 3; top: 12px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 14px; border: 1px solid rgba(255, 200, 80, 0.6); background: rgba(40, 32, 10, 0.8); color: #ffd780; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; backdrop-filter: blur(4px); }
 .pcb-mirror-badge:disabled { cursor: default; }
+/* Shift+Tab through what is under the last click: which one of how many is selected. */
+.pcb-cycle-note { position: absolute; z-index: 3; bottom: 16px; left: 50%; transform: translateX(-50%); padding: 5px 12px; border-radius: 14px; border: 1px solid var(--border); background: rgba(20, 22, 26, 0.85); color: var(--text); font-size: 12px; white-space: nowrap; pointer-events: none; backdrop-filter: blur(4px); }
+.pcb-cycle-note .dim { color: var(--text-dim); }

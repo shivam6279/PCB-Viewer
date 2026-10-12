@@ -1,6 +1,6 @@
-// What is under a board point: pads and vias first, then tracks/arcs (current layer first, then the
-// other visible layers from the top), then the smallest component whose outline holds the point.
-// Pure: no DOM.
+// What is under a board point: pads and vias first, then the smallest component whose outline holds the
+// point, then tracks/arcs (current layer first, then the other visible layers from the top); and the
+// whole stack of what is there, for the pick menu and cycling. Pure: no DOM.
 import { drawOrder } from "./layers"
 import { boxArea, boxContains, type PcbObject, type PcbScene, type PcbSceneComponent, type Prim } from "./scene"
 
@@ -54,44 +54,85 @@ export interface HitOptions {
 	isPartShown?(o: PcbObject, part: PcbSceneComponent): boolean
 	current: string
 	side: "top" | "bottom"
+	// The part whose pads are open to a click (the selected one, or the one a selected pad is on). When
+	// given, the pads of every other part come after their part: a click on one picks the part first.
+	// Left out, pads are always picked first (the 3D view).
+	openPart?: number | null
 }
 
-// What a click picks: a pad or via; else the component whose outline holds the point (clicking anywhere
-// in a part selects the part, even over a track running under it); else a copper track or arc.
+// What a click picks: a via, a pad on no part or on the open part; else the component whose outline
+// holds the point (clicking anywhere in a part selects the part, even over a track running under it, or
+// over one of its pads until it is selected); else a copper track or arc.
 // Only what is shown in the current layer view can be picked, so on Top only, bottom-side parts and
 // inner-layer tracks are ignored.
 export function hitTest(index: PcbIndex, x: number, y: number, opts: HitOptions): PcbHit | null {
 	const { scene } = index
+	return (
+		hitsAt(index, x, y, opts).find(h => {
+			if (h.kind === "component") return true
+			const o = scene.objects[h.id]!
+			return o.kind === "pad" || o.kind === "via" || ((o.kind === "track" || o.kind === "arc") && isCopper(scene, o))
+		}) ?? null
+	)
+}
+
+// Everything that can be picked at a point, in the order a click would take it: vias and open pads
+// (topmost first), the parts whose outline holds the point (smallest first), the other parts' pads,
+// copper tracks and arcs, copper fills
+// and regions, polygon pours, then lines and shapes on other layers that belong to no part (a part's own
+// silk and outlines are the part). What a part sits on top of is reachable through this list.
+export function hitsAt(index: PcbIndex, x: number, y: number, opts: HitOptions): PcbHit[] {
+	const { scene } = index
 	const candidates = (index.cells.get(`${Math.floor(x / CELL)},${Math.floor(y / CELL)}`) ?? [])
 		.map(id => scene.objects[id]!)
-		.filter(o => opts.isShown(o) && inside(o, x, y, opts.tolerance))
+		.filter(o => o.kind !== "text" && o.kind !== "body" && opts.isShown(o) && inside(o, x, y, opts.tolerance))
 	const order = drawOrder(scene.layers, opts.current, opts.side)
 	const depth = (o: PcbObject) => order.indexOf(o.layer) // higher = drawn later = on top
-	const topmost = (list: PcbObject[]) => list.sort((a, b) => depth(b) - depth(a))[0]
+	const byDepth = (list: PcbObject[]): PcbHit[] => list.sort((a, b) => depth(b) - depth(a)).map(o => ({ kind: "object", id: o.id }))
+	const copper = candidates.filter(o => isCopper(scene, o))
+	const pads = candidates.filter(o => o.kind === "pad" || o.kind === "via")
+	const open = (o: PcbObject) => opts.openPart === undefined || o.component === null || o.component === opts.openPart
 
-	const pad = topmost(candidates.filter(o => o.kind === "pad" || o.kind === "via"))
-	if (pad) return { kind: "object", id: pad.id }
-	const component = componentAt(index, x, y, opts.isPartShown ?? opts.isShown)
-	if (component !== null) return { kind: "component", index: component }
-	const track = topmost(candidates.filter(o => o.kind === "track" || o.kind === "arc").filter(o => scene.layers.find(l => l.key === o.layer)?.group === "copper"))
-	if (track) return { kind: "object", id: track.id }
+	return [
+		...byDepth(pads.filter(open)),
+		...componentsAt(index, x, y, opts.isPartShown ?? opts.isShown).map((i): PcbHit => ({ kind: "component", index: i })),
+		...byDepth(pads.filter(o => !open(o))),
+		...byDepth(copper.filter(o => o.kind === "track" || o.kind === "arc")),
+		...byDepth(copper.filter(o => (o.kind === "fill" || o.kind === "region") && !o.pour)),
+		...byDepth(copper.filter(o => o.kind === "region" && o.pour)),
+		...byDepth(candidates.filter(o => !isCopper(scene, o) && o.component === null && o.kind !== "pad" && o.kind !== "via")),
+	]
+}
+
+// The net a double-click selects: that of the first thing at the point that has one, looking past parts
+// (which have no net) to the copper under them.
+export function netAt(index: PcbIndex, x: number, y: number, opts: HitOptions): string | null {
+	for (const h of hitsAt(index, x, y, opts)) {
+		const net = h.kind === "object" ? index.scene.objects[h.id]!.net : null
+		if (net) return net
+	}
 	return null
 }
+
+const isCopper = (scene: PcbScene, o: PcbObject) => scene.layers.find(l => l.key === o.layer)?.group === "copper"
 
 // The smallest component whose outline (3D body / pads) holds the point, among those with something shown in the
 // current layer view.
 export function componentAt(index: PcbIndex, x: number, y: number, isShown: (o: PcbObject, part: PcbSceneComponent) => boolean): number | null {
+	return componentsAt(index, x, y, isShown)[0] ?? null
+}
+
+// Every such component, smallest first.
+function componentsAt(index: PcbIndex, x: number, y: number, isShown: (o: PcbObject, part: PcbSceneComponent) => boolean): number[] {
 	const { scene } = index
-	let best: { index: number; area: number } | null = null
+	const found: { index: number; area: number }[] = []
 	for (const [i, c] of scene.components.entries()) {
 		const [x0, y0, x1, y1] = c.outline
 		if (x < x0 || x > x1 || y < y0 || y > y1 || !boxContains(c.box, x, y)) continue
-		const area = boxArea(c.box)
-		if (best && area >= best.area) continue
 		if (!c.objects.some(id => { const o = scene.objects[id]!; return o.kind !== "text" && isShown(o, c) })) continue
-		best = { index: i, area }
+		found.push({ index: i, area: boxArea(c.box) })
 	}
-	return best?.index ?? null
+	return found.sort((a, b) => a.area - b.area).map(f => f.index)
 }
 
 function inside(o: PcbObject, x: number, y: number, tol: number): boolean {

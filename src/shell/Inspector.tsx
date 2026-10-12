@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Check, ChevronDown, ChevronRight, X } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, Eye, EyeOff, X } from "lucide-react"
 import { useAppStore, type Selection, type ViewTab } from "../app/store"
 import type { CompiledBundle, CompiledComponent, CompiledNet, CompiledProject } from "../model/compile"
 import { flattenHierarchy, type HierarchyNode } from "../model/hierarchy"
@@ -8,7 +8,7 @@ import type { PcbData } from "../parse/extract-pcb"
 import type { Parser } from "../parse/parser"
 import type { ProjectData } from "../parse/project-data"
 import type { PcbObject, PcbScene } from "../pcb/scene"
-import { netSelection, pcbComponentIndex } from "../pcb/selection"
+import { netSelection, partKey, pcbComponentIndex } from "../pcb/selection"
 import { usePcbScene } from "../pcb/use-scene"
 import { instanceLabel } from "../sch/interaction"
 import { footprintSvg } from "../pcb/footprint-svg"
@@ -56,6 +56,7 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 				<aside className="inspector" aria-label="Component properties">
 					<Head title={c.designator} onClose={close} views={["PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => (v === "PCB" ? useAppStore.getState().showOnPcb(selection) : v === "3D" ? useAppStore.getState().showOn3d(selection) : useAppStore.getState().setTab("bom"))} />
 					{c.comment && <div className="inspector-heading">{c.comment}</div>}
+					{tab === "3d" && <HideIn3d part={partKey(scene, selection.index)} />}
 					<Section title="Footprint">
 						<FootprintPicture scene={scene} index={selection.index} label={`Footprint ${c.footprint}`} />
 						<div className="inspector-row">{c.footprint}</div>
@@ -291,7 +292,8 @@ function ObjectPanel({ tab, compiled, scene, pcb, object: o, onClose }: Views & 
 	const compiledComponent = component ? compiled.components.find(c => c.uniquePath === component.sourceUniqueId) : undefined
 	// The schematic's channel designator (J1_ESC_2): board designators can repeat across channels.
 	const designator = compiledComponent?.designator ?? component?.designator ?? ""
-	const title = isPad ? `${designator}-${o.pad!.name}` : (o.net ?? (o.kind === "via" ? "Via" : o.kind === "arc" ? "Arc" : "Track"))
+	const kindName = o.kind === "via" ? "Via" : o.kind === "arc" ? "Arc" : o.kind === "fill" ? "Fill" : o.kind === "region" ? (o.pour ? "Polygon" : "Region") : "Track"
+	const title = isPad ? `${designator}-${o.pad!.name}` : (o.net ?? kindName)
 	const onView = (v: string) => {
 		if (v === "PCB") return useAppStore.getState().showOnPcb({ kind: "pcbObject", id: o.id })
 		if (v === "3D") return useAppStore.getState().showOn3d({ kind: "pcbObject", id: o.id })
@@ -301,7 +303,7 @@ function ObjectPanel({ tab, compiled, scene, pcb, object: o, onClose }: Views & 
 		}
 	}
 	return (
-		<aside className="inspector" aria-label={isPad ? "Pad properties" : o.kind === "via" ? "Via properties" : "Track properties"}>
+		<aside className="inspector" aria-label={isPad ? "Pad properties" : `${kindName} properties`}>
 			<Head title={title} onClose={onClose} views={isPad ? ["SCH", "PCB", "3D"] : ["PCB", "3D"]} active={tabLabel(tab)} onView={onView} />
 			{o.net && (
 				<dl className="inspector-props">
@@ -331,6 +333,11 @@ function ObjectPanel({ tab, compiled, scene, pcb, object: o, onClose }: Views & 
 					<Prop name="Width" value={mm(o.width ?? 0)} />
 					<Prop name="Layer" value={layerName} />
 					<Prop name="Length" value={mm(o.length ?? 0)} />
+				</Section>
+			)}
+			{(o.kind === "fill" || o.kind === "region") && (
+				<Section title={kindName}>
+					<Prop name="Layer" value={layerName} />
 				</Section>
 			)}
 			<Location scene={scene} x={o.at[0]} y={o.at[1]} rotation={o.kind === "pad" ? o.pad?.rotation : undefined} layer={o.layer} />
@@ -381,6 +388,7 @@ function ComponentPanel({ tab, compiled, activeSheetId, pcb, scene, component, f
 			<Head title={title} onClose={onClose} views={["SCH", "PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => crossProbe(v, selection, compiled, activeSheetId)} />
 			{component.comment && <div className="inspector-heading">{component.comment}</div>}
 			{component.description && <div className="inspector-desc">{component.description}</div>}
+			{tab === "3d" && scene && placedIndex >= 0 && <HideIn3d part={partKey(scene, placedIndex)} />}
 			{component.footprint && (
 				<Section title="Footprint">
 					{scene && placedIndex >= 0 && <FootprintPicture scene={scene} index={placedIndex} label={`Footprint ${component.footprint}`} />}
@@ -433,6 +441,25 @@ function ComponentPanel({ tab, compiled, activeSheetId, pcb, scene, component, f
 				</Section>
 			)}
 		</aside>
+	)
+}
+
+// Hides the part's body in the 3D view (or shows it again).
+function HideIn3d({ part }: { part: string }) {
+	const hidden = useAppStore(s => s.view3dHidden)
+	const isHidden = hidden.has(part)
+	const toggle = () => {
+		const next = new Set(hidden)
+		if (!next.delete(part)) next.add(part)
+		useAppStore.getState().setView3dHidden(next)
+	}
+	return (
+		<div className="inspector-actions">
+			<button className="inspector-action" aria-pressed={isHidden} onClick={toggle}>
+				{isHidden ? <Eye size={14} /> : <EyeOff size={14} />}
+				{isHidden ? "Show" : "Hide"}
+			</button>
+		</div>
 	)
 }
 

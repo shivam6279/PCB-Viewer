@@ -1,10 +1,10 @@
 import { expect, test } from "vitest"
 import type { CompiledProject } from "../model/compile"
-import { buildIndex, hitTest, primContains } from "./hit"
+import { buildIndex, hitsAt, hitTest, netAt, primContains } from "./hit"
 import { describeLayer, drawOrder, type PcbLayer } from "./layers"
 import { netSummaries } from "./nets"
 import { boxArea, boxContains, cornersOf, rotatedBox, strokeText, type PcbObject, type PcbScene } from "./scene"
-import { componentSelection, netSelection, pcbHighlight } from "./selection"
+import { componentSelection, hitInSelection, hitLabel, hitPosition, hitSelection, netSelection, openPart, pcbHighlight } from "./selection"
 
 const layer = (key: string, stack: number, z?: number): PcbLayer => ({ ...describeLayer(key, () => undefined), stack, z })
 const LAYERS: PcbLayer[] = [
@@ -73,6 +73,67 @@ test("clicks pick pads and vias first, then copper tracks, then the component", 
 	expect(hitTest(idx, 40, 3, { ...opts, isShown: o => o.layer !== "TOP" })).toBeNull()
 	// A part with nothing shown in the current layer view (e.g. a bottom part on Top only) is not picked.
 	expect(hitTest(idx, 140, 20, { ...opts, isShown: o => o.layer === "BOTTOM" })).toBeNull()
+})
+
+test("the stack under a point reaches what a part covers; double-click finds the net under the part", () => {
+	const square = (x0: number, y0: number, x1: number, y1: number) => ({ t: "poly" as const, rings: [[x0, y0, x1, y0, x1, y1, x0, y1]] })
+	const s = scene(
+		[
+			obj({ kind: "track", layer: "TOP", net: "SDA", prims: [{ t: "seg", x1: 0, y1: 20, x2: 300, y2: 20, w: 10 }] }),
+			obj({ kind: "pad", layer: "TOP", net: "A", component: 0, prims: [{ t: "circle", x: 100, y: 0, r: 20 }] }),
+			obj({ kind: "track", layer: "TOPOVERLAY", component: 0, prims: [{ t: "seg", x1: 80, y1: 40, x2: 160, y2: 40, w: 5 }] }),
+			obj({ kind: "region", layer: "BOTTOM", net: "GND", pour: true, prims: [square(0, -100, 300, 100)], bbox: [0, -100, 300, 100] }),
+			obj({ kind: "track", layer: "TOP", net: "SCL", prims: [{ t: "seg", x1: 0, y1: 300, x2: 300, y2: 300, w: 10 }] }),
+		],
+		[{ designator: "R1", sourceUniqueId: "\\R", footprint: "0603", footprintDescription: "", comment: "10k", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
+	)
+	const idx = buildIndex(s)
+	const opts = { tolerance: 1, isShown: () => true, current: "TOP", side: "top" as const }
+	// On the track inside the part: the part, then the track it covers, then the pour; its silk is the part.
+	const stack = hitsAt(idx, 140, 20, opts)
+	expect(stack).toEqual([{ kind: "component", index: 0 }, { kind: "object", id: 0 }, { kind: "object", id: 3 }])
+	expect(hitTest(idx, 140, 20, opts)).toEqual({ kind: "component", index: 0 }) // a click still takes the part
+	expect(netAt(idx, 140, 20, opts)).toBe("SDA")
+	expect(netAt(idx, 140, 0, opts)).toBe("GND") // inside the part, off the track: the pour under it
+	expect(hitTest(idx, 140, 0, opts)).toEqual({ kind: "component", index: 0 }) // a pour alone is never clicked
+	expect(hitsAt(idx, 500, 500, opts)).toEqual([])
+
+	// Shift+Tab steps from the selection to the next in the stack, wrapping round.
+	const compiled = null
+	expect(hitPosition(s, stack, { kind: "pcbComponent", index: 0 }, compiled)).toBe(0)
+	expect(hitPosition(s, stack, { kind: "pcbObject", id: 3 }, compiled)).toBe(2)
+	expect(hitPosition(s, stack, { kind: "pcbObject", id: 4 }, compiled)).toBe(-1)
+	expect(hitSelection(s, stack[1]!, compiled)).toEqual({ kind: "pcbObject", id: 0 })
+	expect(stack.map(h => hitLabel(s, h, compiled))).toEqual([
+		{ kind: "Part", label: "R1", detail: "10k · 0603" },
+		{ kind: "Track", label: "SDA", detail: "Top Layer" },
+		{ kind: "Polygon", label: "GND", detail: "Bottom Layer" },
+	])
+	expect(hitLabel(s, { kind: "object", id: 1 }, compiled)).toEqual({ kind: "Pad", label: "R1-", detail: "A" })
+
+	// With something selected, only a click on it (or on what it holds) picks; anywhere else clears it.
+	const part = { kind: "pcbComponent" as const, index: 0 }
+	expect(hitInSelection(s, { kind: "component", index: 0 }, part, compiled)).toBe(true)
+	expect(hitInSelection(s, { kind: "object", id: 1 }, part, compiled)).toBe(true) // its pad
+	expect(hitInSelection(s, { kind: "object", id: 4 }, part, compiled)).toBe(false)
+	const sda = { kind: "pcbNet" as const, name: "SDA" }
+	expect(hitInSelection(s, { kind: "object", id: 0 }, sda, compiled)).toBe(true)
+	expect(hitInSelection(s, { kind: "component", index: 0 }, sda, compiled)).toBe(false)
+	expect(hitInSelection(s, { kind: "object", id: 0 }, null, compiled)).toBe(false)
+
+	// A part's pads are reached through the part: on its pad, a click picks the part until the part (or a
+	// pad of it) is selected. Without openPart (the 3D view) pads always come first.
+	expect(hitTest(idx, 100, 0, { ...opts, openPart: null })).toEqual({ kind: "component", index: 0 })
+	expect(hitsAt(idx, 100, 0, { ...opts, openPart: null })[1]).toEqual({ kind: "object", id: 1 })
+	expect(hitTest(idx, 100, 0, { ...opts, openPart: openPart(s, part, compiled) })).toEqual({ kind: "object", id: 1 })
+	expect(openPart(s, { kind: "pcbObject", id: 1 }, compiled)).toBe(0)
+	expect(openPart(s, { kind: "pcbObject", id: 0 }, compiled)).toBeNull() // a track opens no part
+	expect(hitTest(idx, 100, 0, opts)).toEqual({ kind: "object", id: 1 })
+	// With a pad selected, its part and its other objects are clicks inside; other copper is not.
+	const pad = { kind: "pcbObject" as const, id: 1 }
+	expect(hitInSelection(s, { kind: "component", index: 0 }, pad, compiled)).toBe(true)
+	expect(hitInSelection(s, { kind: "object", id: 2 }, pad, compiled)).toBe(true)
+	expect(hitInSelection(s, { kind: "object", id: 0 }, pad, compiled)).toBe(false)
 })
 
 test("arcs are hit only along their sweep", () => {

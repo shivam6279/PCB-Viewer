@@ -56,6 +56,43 @@ test("clicking a part selects it: the rest goes grey and the inspector opens", a
 	await expect(page.locator(".inspector")).toHaveCount(0)
 })
 
+test("a part hidden from the inspector is noted on top and listed in the Objects panel until focus moves on", async ({ page }) => {
+	await openCubli3d(page)
+	const stats = () => page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.stats())
+	const before = (await stats()).shown
+	const p = await clientOfComponent(page, "U13_ESC")
+	await page.mouse.click(p.x, p.y)
+	const inspector = page.locator(".inspector")
+	await inspector.getByRole("button", { name: "Hide" }).click()
+	await expect(inspector.getByRole("button", { name: "Show" })).toBeVisible()
+	expect((await stats()).shown).toBe(before - 1) // that one part, not every channel's U13
+	const badge = page.locator(".view3d .pcb-mirror-badge")
+	await expect(badge).toHaveText("1 part hidden")
+	await shot(page, "3d-part-hidden")
+
+	// The note opens the Objects panel, which lists the part; a click there selects it.
+	await page.keyboard.press("Escape")
+	await badge.click()
+	const panel = page.getByRole("complementary", { name: "Objects", exact: true })
+	// Labelled with its channel's designator: the board has three U13_ESC.
+	const row = panel.locator('[data-part="U13_ESC_3"]')
+	await row.click()
+	await expect(inspector).toContainText("U13_ESC")
+	await expect(row).toHaveClass(/selected/)
+	await shot(page, "3d-hidden-list")
+
+	// Shown again: drawn, the note goes, but the row stays (to hide it back) until a click elsewhere.
+	await row.getByRole("button", { name: "Show U13_ESC_3" }).click()
+	expect((await stats()).shown).toBe(before)
+	await expect(badge).toHaveCount(0)
+	await expect(row).toBeVisible()
+	await expect(row).not.toHaveClass(/hidden/)
+	await shot(page, "3d-shown-lingering")
+	const box = (await page.locator(".view3d-canvas").boundingBox())!
+	await page.mouse.click(box.x + box.width - 20, box.y + box.height - 20)
+	await expect(row).toHaveCount(0)
+})
+
 test("Objects panel: Bottom turns the board over, 3D Body hides the parts", async ({ page }) => {
 	await openCubli3d(page)
 	// The PCB view's own panel (also Top / Bottom / Objects) stays mounted behind: look in this one.
@@ -227,4 +264,252 @@ test("Orthographic keeps parallel edges parallel, and zoom and picking still fol
 	await openCubli3d(page)
 	await expect(page.getByRole("radio", { name: "Orthographic" })).toHaveAttribute("aria-checked", "true")
 	expect(errors).toEqual([])
+})
+
+test("F turns the board over about its centre, eased, and F again turns it back", async ({ page }) => {
+	await openCubli3d(page)
+	// Panned off the centre and turned a little, so the turn's axis and centre both show.
+	const start = await page.evaluate(() => {
+		const e = (document.querySelector(".view3d-canvas") as any).__view3d
+		const v = e.getView()
+		v.offset.set(v.offset.x + 15, v.offset.y - 8)
+		e.setView(v)
+		e.rotate(40, 25)
+		const w = e.getView()
+		return { q: w.quaternion.toArray() as [number, number, number, number], offset: [w.offset.x, w.offset.y], distance: w.distance }
+	})
+	await shot(page, "3d-flip-before")
+	const view = () =>
+		page.evaluate(() => {
+			const v = (document.querySelector(".view3d-canvas") as any).__view3d.getView()
+			return { q: v.quaternion.toArray() as [number, number, number, number], offset: [v.offset.x, v.offset.y], distance: v.distance }
+		})
+	// Sample the turn frame by frame: the camera's facing goes through the in-between angles.
+	const angles: number[] = await page.evaluate(
+		q0 =>
+			new Promise(done => {
+				const e = (document.querySelector(".view3d-canvas") as any).__view3d
+				const out: number[] = []
+				window.dispatchEvent(new KeyboardEvent("keydown", { key: "f", code: "KeyF" }))
+				const t0 = performance.now()
+				const tick = () => {
+					const q = e.getView().quaternion.toArray()
+					const dot = Math.abs(q[0] * q0[0] + q[1] * q0[1] + q[2] * q0[2] + q[3] * q0[3])
+					out.push((2 * Math.acos(Math.min(dot, 1)) * 180) / Math.PI)
+					if (performance.now() - t0 < 600) requestAnimationFrame(tick)
+					else done(out)
+				}
+				requestAnimationFrame(tick)
+			}),
+		start.q,
+	)
+	expect(angles.some(a => a > 20 && a < 160)).toBe(true) // eased, not a jump
+	expect(angles.at(-1)).toBeCloseTo(180, 1)
+	const after = await view()
+	// Same place relative to the centre, so the board centre stays where it was on screen.
+	expect(after.offset[0]).toBeCloseTo(start.offset[0], 6)
+	expect(after.offset[1]).toBeCloseTo(start.offset[1], 6)
+	expect(after.distance).toBeCloseTo(start.distance, 6)
+	// Half a turn about the screen's vertical laid flat on the board: top and bottom swap (every camera
+	// axis's height above the board reverses) and nothing else.
+	const turn = await page.evaluate(
+		([q0, q1]) => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			const Q = e.camera.quaternion.constructor
+			const V = e.camera.position.constructor
+			const a = new Q().fromArray(q0), b = new Q().fromArray(q1)
+			const axis = new V(0, 1, 0).applyQuaternion(a).setZ(0).normalize()
+			const expected = new Q().setFromAxisAngle(axis, Math.PI).multiply(a)
+			const z = (q: any, v: number[]) => new V(...v).applyQuaternion(q).z
+			return {
+				match: Math.abs(expected.dot(b)),
+				heights: [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(v => z(a, v) + z(b, v)),
+			}
+		},
+		[start.q, after.q],
+	)
+	expect(turn.match).toBeCloseTo(1, 6)
+	for (const h of turn.heights) expect(h).toBeCloseTo(0, 6)
+	await shot(page, "3d-flip-after")
+	// F again: back where it started.
+	await page.keyboard.press("f")
+	await expect
+		.poll(async () => {
+			const q = (await view()).q
+			return Math.abs(q[0] * start.q[0] + q[1] * start.q[1] + q[2] * start.q[2] + q[3] * start.q[3])
+		})
+		.toBeCloseTo(1, 6)
+	// From the side: the board turns over in place, the same edge still facing the camera.
+	await page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.showFace("front"))
+	const axesOf = () =>
+		page.evaluate(() => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			const q = e.getView().quaternion
+			const V = e.camera.position.constructor
+			const r = (v: number[]) => new V(...v).applyQuaternion(q).toArray().map((c: number) => Math.round(c * 1e6) / 1e6 + 0)
+			return { back: r([0, 0, 1]), up: r([0, 1, 0]) }
+		})
+	await expect.poll(async () => (await axesOf()).up).toEqual([0, 0, 1])
+	await page.keyboard.press("f")
+	await expect.poll(async () => (await axesOf()).up).toEqual([0, 0, -1])
+	expect((await axesOf()).back).toEqual([0, -1, 0])
+	await shot(page, "3d-flip-side")
+})
+
+test("the view cube turns with the board, and a face click turns the view straight to that side", async ({ page }) => {
+	await openCubli3d(page)
+	const cube = page.getByRole("group", { name: "View cube" })
+	// The faces turned towards the viewer (the others show through faintly and take no clicks).
+	const shown = () => cube.locator(".view-cube-face").evaluateAll(els => els.filter(e => (e as HTMLElement).dataset.side === "front").map(e => (e as HTMLElement).dataset.face).sort())
+	// Opened from the top: only the top face shows.
+	expect(await shown()).toEqual(["top"])
+	// Turned a little: three faces show, the top among them.
+	await page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.rotate(60, 45))
+	await expect.poll(async () => (await shown()).length).toBe(3)
+	expect(await shown()).toContain("top")
+	await shot(page, "3d-view-cube")
+	// The camera's axes and where the turn's pivot lands on screen (normalised, middle = 0,0).
+	const state = () =>
+		page.evaluate(() => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			const q = e.getView().quaternion
+			const V = e.camera.position.constructor
+			const axis = (x: number, y: number, z: number) => new V(x, y, z).applyQuaternion(q).toArray().map((c: number) => Math.round(c * 1e6) / 1e6)
+			return { back: axis(0, 0, 1), up: axis(0, 1, 0), right: axis(1, 0, 0) }
+		})
+	const pivot = await page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.rotationPivot().toArray())
+	const onScreen = (p: number[]) =>
+		page.evaluate(p => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			e.render()
+			const v = new e.camera.position.constructor(...p).project(e.camera)
+			return [v.x, v.y]
+		}, p)
+	// A mouse turn, drawn at once so the cube shows it.
+	const turnBy = (dx: number, dy: number) =>
+		page.evaluate(([dx, dy]) => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			e.rotate(dx, dy)
+			e.render()
+		}, [dx, dy])
+	const near = (a: number[], b: number[]) => a.every((c, i) => Math.abs(c - b[i]!) < 1e-4)
+
+	// Each face: the camera's back (towards the viewer) and up axes looking straight at it.
+	const faceAxes: Record<string, { back: number[]; up: number[] }> = {
+		top: { back: [0, 0, 1], up: [0, 1, 0] },
+		bottom: { back: [0, 0, -1], up: [0, 1, 0] },
+		front: { back: [0, -1, 0], up: [0, 0, 1] },
+		back: { back: [0, 1, 0], up: [0, 0, 1] },
+		right: { back: [1, 0, 0], up: [0, 0, 1] },
+		left: { back: [-1, 0, 0], up: [0, 0, 1] },
+	}
+	const clickFace = async (face: string) => {
+		await cube.locator(`[data-face="${face}"]`).click()
+		await expect.poll(async () => near((await state()).back, faceAxes[face]!.back)).toBe(true)
+		expect(near((await state()).up, faceAxes[face]!.up)).toBe(true)
+		await expect.poll(shown).toEqual([face])
+	}
+
+	// Seen from above the back-left corner: Top, Back and Left show. Back turns the view to the back.
+	expect(await shown()).toEqual(["back", "left", "top"])
+	await clickFace("back")
+	// It turned about the point in the middle of the screen, which stays there.
+	const [px, py] = await onScreen(pivot)
+	expect(Math.abs(px!)).toBeLessThan(0.01)
+	expect(Math.abs(py!)).toBeLessThan(0.01)
+	await shot(page, "3d-view-cube-back")
+	// Turned about the vertical: a side shows next to the back.
+	await turnBy(50, 0)
+	const side = (await shown()).find(f => f === "left" || f === "right")!
+	expect(side).toBeTruthy()
+	await clickFace(side)
+	// Tilted: the bottom (or top) shows; the bottom reads mirrored, turned over about the vertical.
+	await turnBy(0, -50)
+	const lid = (await shown()).find(f => f === "top" || f === "bottom")!
+	expect(lid).toBeTruthy()
+	await clickFace(lid)
+	await shot(page, `3d-view-cube-${lid}`)
+	if (lid === "bottom") expect(near((await state()).right, [-1, 0, 0])).toBe(true)
+})
+
+test("the view cube drags like the board, and its arrows turn about one view axis: a quarter turn on click, freely on drag", async ({ page }) => {
+	await openCubli3d(page)
+	const cube = page.getByRole("group", { name: "View cube" })
+	const quat = () => page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.getView().quaternion.toArray() as number[])
+	// The angle and axis (in the starting view's own axes) of the turn from q0 to now.
+	const turnSince = (q0: number[]) =>
+		page.evaluate(q0 => {
+			const e = (document.querySelector(".view3d-canvas") as any).__view3d
+			const Q = e.camera.quaternion.constructor
+			const a = new Q().fromArray(q0)
+			const b = e.getView().quaternion
+			// b = r · a, r in world terms; seen in a's own axes: a⁻¹ · r · a = a⁻¹ · b.
+			const local = a.clone().invert().multiply(b)
+			if (local.w < 0) local.set(-local.x, -local.y, -local.z, -local.w)
+			const angle = (2 * Math.acos(Math.min(local.w, 1)) * 180) / Math.PI
+			const sin = Math.sqrt(Math.max(1 - local.w * local.w, 1e-12))
+			return { angle, axis: [local.x / sin, local.y / sin, local.z / sin].map(c => Math.round(c * 1000) / 1000 + 0) }
+		}, q0)
+	const arrows = cube.locator(".view-cube-arrow")
+	// The arrows show only while the mouse is over the cube.
+	await expect(arrows.first()).toHaveCSS("opacity", "0")
+	const box = (await cube.locator(".view-cube-box").boundingBox())!
+	const mid = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+	await page.mouse.move(mid.x, mid.y)
+	await expect(arrows.first()).toHaveCSS("opacity", "1")
+	await shot(page, "3d-cube-arrows")
+
+	// Dragging the cube turns the board, as a drag on the board does, and selects no face.
+	let q0 = await quat()
+	await page.mouse.down()
+	await page.mouse.move(mid.x + 20, mid.y + 10, { steps: 4 })
+	await page.mouse.up()
+	expect((await turnSince(q0)).angle).toBeGreaterThan(10)
+	await expect.poll(async () => (await cube.locator('[data-side="front"]').count()) > 1).toBe(true)
+	await shot(page, "3d-cube-dragged")
+
+	// Each arrow clicked: a quarter turn about its own view axis, no other.
+	const steps: [string, number[]][] = [
+		["Turn right", [0, -1, 0]],
+		["Turn left", [0, 1, 0]],
+		["Turn up", [1, 0, 0]],
+		["Turn down", [-1, 0, 0]],
+		["Roll clockwise", [0, 0, 1]],
+		["Roll anticlockwise", [0, 0, -1]],
+	]
+	for (const [name, axis] of steps) {
+		q0 = await quat()
+		await cube.getByRole("button", { name }).click()
+		await expect.poll(async () => (await turnSince(q0)).angle).toBeCloseTo(90, 3)
+		expect((await turnSince(q0)).axis).toEqual(axis)
+	}
+	// Clockwise from the top: the board's up (+y) goes to the screen's right.
+	await page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.showFace("top"))
+	await expect.poll(async () => Math.abs((await quat())[3]!)).toBeCloseTo(1, 6)
+	await page.mouse.move(mid.x, mid.y)
+	await cube.getByRole("button", { name: "Roll clockwise" }).click()
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const e = (document.querySelector(".view3d-canvas") as any).__view3d
+				const right = new e.camera.position.constructor(1, 0, 0).applyQuaternion(e.getView().quaternion)
+				return Math.round(right.y * 1e6) / 1e6
+			}),
+		)
+		.toBe(1)
+
+	// An arrow dragged: a free turn, still about only that axis.
+	for (const [name, axis] of [["Turn right", [0, 1, 0]], ["Turn up", [1, 0, 0]]] as const) {
+		await page.mouse.move(mid.x, mid.y)
+		const arrow = (await cube.getByRole("button", { name }).boundingBox())!
+		q0 = await quat()
+		await page.mouse.move(arrow.x + arrow.width / 2, arrow.y + arrow.height / 2)
+		await page.mouse.down()
+		await page.mouse.move(arrow.x + arrow.width / 2 - 15, arrow.y + arrow.height / 2 - 25, { steps: 5 })
+		await page.mouse.up()
+		const t = await turnSince(q0)
+		expect(t.angle).toBeGreaterThan(5)
+		expect(t.angle).toBeLessThan(80)
+		expect(t.axis).toEqual(axis)
+	}
 })

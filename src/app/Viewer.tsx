@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useAppStore } from "./store"
 import { TopBar } from "../shell/TopBar"
 import { ProjectTree } from "../shell/ProjectTree"
@@ -12,7 +12,9 @@ import { CommitSwitcher } from "./CommitSwitcher"
 import { navigate } from "./github-open"
 import { PaneContext } from "./pane"
 import { DiffArea } from "../shell/DiffArea"
-import type { CompareMode } from "./store"
+import type { CompareMode, Selection } from "./store"
+import { SearchPalette } from "../shell/SearchPalette"
+import { buildSearchIndex, type SearchItem } from "../shell/search"
 
 export function Viewer() {
 	// While parked behind the home screen the viewer keeps rendering its own (hidden) state.
@@ -78,8 +80,42 @@ export function Viewer() {
 		[data],
 	)
 
+	// Project search: the top-bar icon, or Ctrl+F / Cmd+F instead of the browser's find.
+	const [searching, setSearching] = useState(false)
+	const searchProject = onSecondary ? secondary.project : project
+	const searchIndex = useMemo(() => (data && searchProject ? buildSearchIndex(data.compiled, searchProject.hierarchy) : null), [data, searchProject])
+	const canSearch = viewing && searchIndex !== null && mode !== "diff"
+	useEffect(() => {
+		if (!canSearch) return
+		const onKey = (e: KeyboardEvent) => {
+			if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "f") return
+			e.preventDefault()
+			setSearching(true)
+		}
+		window.addEventListener("keydown", onKey)
+		return () => window.removeEventListener("keydown", onKey)
+	}, [canSearch])
+
 	if (screen.kind !== "viewer") return null
 	const { tab, activeSheetId, activePcbPath } = screen
+
+	// A search hit, shown in the view on screen: framed on the sheet / board / 3D, marked in the BOM.
+	const showHit = (item: SearchItem) => {
+		const store = useAppStore.getState()
+		if (item.kind === "sheet") return store.selectSheet(item.id)
+		const selection: Selection = item.kind === "net" ? { kind: "net", netId: item.id } : { kind: "component", id: item.id }
+		if (tab === "pcb") return store.showOnPcb(selection)
+		if (tab === "3d") return store.showOn3d(selection)
+		if (tab === "bom" && item.kind === "component") return store.select(selection)
+		const compiled = data!.compiled
+		if (item.kind === "component") {
+			const c = compiled.components.find(c => c.id === item.id)
+			return c ? store.jumpTo(c.instanceId, [c.i], selection) : store.select(selection)
+		}
+		const net = compiled.nets[item.id]
+		const here = net?.occurrences.find(o => o.instanceId === activeSheetId) ?? net?.occurrences[0]
+		return here ? store.jumpTo(here.instanceId, here.objects, selection) : store.select(selection)
+	}
 	// A net picked in the tree: shown on the current sheet if it is there, else where it first appears.
 	// On the 3D tab it stays in 3D, framed from the top.
 	const selectNet = (id: number) => {
@@ -109,6 +145,7 @@ export function Viewer() {
 				<TopBar
 					title={screen.project.name}
 					subtitle={`${screen.source.ref.owner}/${screen.source.ref.repo}`}
+					onSearch={canSearch ? () => setSearching(true) : undefined}
 					onBack={() => {
 						const git = screen.source as GitCommitSource
 						navigate({ kind: "ghProject", owner: git.ref.owner, repo: git.ref.repo, prjPath: screen.project.prjPath ?? "", branch: null })
@@ -117,7 +154,7 @@ export function Viewer() {
 					<CommitSwitcher source={screen.source} project={screen.project} />
 				</TopBar>
 			) : (
-				<TopBar title={screen.source.name} subtitle={screen.project.name} onBack={() => setScreen({ kind: "start", error: null })} />
+				<TopBar title={screen.source.name} subtitle={screen.project.name} onBack={() => setScreen({ kind: "start", error: null })} onSearch={canSearch ? () => setSearching(true) : undefined} />
 			)}
 			<ProjectTree
 				project={shown.project}
@@ -154,6 +191,7 @@ export function Viewer() {
 					{data && selection && mode !== "diff" && <Inspector parser={shown.parser} tab={tab} project={shown.project} data={data} selection={selection} activeSheetId={activeSheetId} />}
 				</div>
 			</main>
+			{searching && searchIndex && <SearchPalette items={searchIndex} onPick={showHit} onClose={() => setSearching(false)} />}
 		</div>
 	)
 }

@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Eye, EyeOff, RotateCcw, X } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
 // Small object-type icons, drawn here.
 const BLUE = "#6aa7e6", GOLD = "#e8c440", ORANGE = "#e09a3a"
@@ -35,14 +35,39 @@ export interface Objects3dState {
 	hiddenKinds: Set<string>
 }
 
-export function ObjectsPanel({ state, onSide, onKinds, onReset, onClose }: {
+export function ObjectsPanel({ state, onSide, onKinds, onReset, onClose, hiddenParts, selectedPart, partLabel, onHiddenParts, onSelectPart }: {
 	state: Objects3dState
 	onSide(side: "top" | "bottom"): void
 	onKinds(hidden: Set<string>): void
 	onReset(): void
 	onClose(): void
+	hiddenParts: Set<string> // partKey
+	selectedPart: string | null
+	partLabel(key: string): string
+	onHiddenParts(hidden: Set<string>): void
+	onSelectPart(key: string): void
 }) {
 	const [open, setOpen] = useState(true)
+	const [partsOpen, setPartsOpen] = useState(true)
+	// A part shown again from this list stays in it (to hide it back) until a click lands elsewhere.
+	const [lingering, setLingering] = useState<Set<string>>(new Set())
+	const order = useRef<string[]>([])
+	order.current = [...order.current.filter(d => hiddenParts.has(d) || lingering.has(d)), ...[...hiddenParts].filter(d => !order.current.includes(d))]
+	const partsList = useRef<HTMLDivElement>(null)
+	useEffect(() => {
+		if (lingering.size === 0) return
+		const down = (e: PointerEvent) => {
+			if (!partsList.current?.contains(e.target as Node)) setLingering(new Set())
+		}
+		window.addEventListener("pointerdown", down, true)
+		return () => window.removeEventListener("pointerdown", down, true)
+	}, [lingering])
+	const toggle = (key: string) => {
+		const next = new Set(hiddenParts)
+		if (next.delete(key)) setLingering(new Set(lingering).add(key))
+		else next.add(key)
+		onHiddenParts(next)
+	}
 	const changed = state.hiddenKinds.size > 0
 	return (
 		<aside className="pcb-layers objects-3d" aria-label="Objects">
@@ -98,6 +123,37 @@ export function ObjectsPanel({ state, onSide, onKinds, onReset, onClose }: {
 							</div>
 						)
 					})}
+				{order.current.length > 0 && (
+					<div ref={partsList} className="objects-3d-parts">
+						<button className="pcb-layers-group" onClick={() => setPartsOpen(!partsOpen)}>
+							{partsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+							Hidden Parts
+						</button>
+						{partsOpen &&
+							order.current.map(d => {
+								const hidden = hiddenParts.has(d)
+								const label = partLabel(d)
+								return (
+									<div key={d} className={`pcb-layer-row part${hidden ? " hidden" : ""}${d === selectedPart ? " selected" : ""}`} data-part={label} onClick={() => onSelectPart(d)}>
+										<svg className="kind-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+											{ICONS.body}
+										</svg>
+										<span className="grow">{label}</span>
+										<button
+											className="icon eye"
+											aria-label={`${hidden ? "Show" : "Hide"} ${label}`}
+											onClick={e => {
+												e.stopPropagation()
+												toggle(d)
+											}}
+										>
+											{hidden ? <EyeOff size={14} /> : <Eye size={14} />}
+										</button>
+									</div>
+								)
+							})}
+					</div>
+				)}
 			</div>
 		</aside>
 	)

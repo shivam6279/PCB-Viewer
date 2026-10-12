@@ -75,6 +75,7 @@ interface AppState {
 	view3dPanelOpen: boolean
 	view3dPrepared: boolean // the 3D data is in: the 3D view may be built ahead, hidden
 	view3dProjection: Projection3d // remembered in this browser
+	view3dHidden: Set<string> // parts hidden by hand in the 3D view (partKey), for the open board
 	setScreen(screen: Screen): void
 	returnToViewer(): void
 	setCompare(compare: Compare | null): void
@@ -98,6 +99,7 @@ interface AppState {
 	setView3dPanelOpen(open: boolean): void
 	setView3dPrepared(prepared: boolean): void
 	setView3dProjection(projection: Projection3d): void
+	setView3dHidden(hidden: Set<string>): void
 }
 
 export type Projection3d = "perspective" | "orthographic"
@@ -133,6 +135,7 @@ export const useAppStore = create<AppState>((set, get) => {
 		view3dPanelOpen: false,
 		view3dPrepared: false,
 		view3dProjection: storedProjection(),
+		view3dHidden: new Set(),
 		setScreen(screen) {
 			const current = get().screen
 			set({ screen, parked: screen.kind === "viewer" ? null : current.kind === "viewer" ? current : get().parked })
@@ -166,11 +169,16 @@ export const useAppStore = create<AppState>((set, get) => {
 				focus: null,
 				variant: project.variants?.[0]?.name ?? null,
 				view3dPrepared: false,
+				view3dHidden: new Set(),
 			})
 		},
 		setTab: tab => updateViewer({ tab }),
 		selectSheet: id => updateViewer({ tab: "sch", activeSheetId: id }),
-		selectPcb: path => updateViewer({ tab: "pcb", activePcbPath: path }),
+		selectPcb(path) {
+			const s = get().screen
+			if (s.kind === "viewer" && s.activePcbPath !== path) set({ view3dHidden: new Set() })
+			updateViewer({ tab: "pcb", activePcbPath: path })
+		},
 		setProjectData: projectData => set({ projectData }),
 		select: selection => set({ selection }),
 		setVariant: variant => set({ variant }),
@@ -194,6 +202,7 @@ export const useAppStore = create<AppState>((set, get) => {
 			}
 			set({ view3dProjection })
 		},
+		setView3dHidden: view3dHidden => set({ view3dHidden }),
 		jumpTo(instanceId, objects, selection) {
 			if (selection !== undefined) set({ selection })
 			set({ focus: { instanceId, objects, seq: ++focusSeq } })

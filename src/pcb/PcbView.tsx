@@ -4,16 +4,18 @@ import { useAppStore } from "../app/store"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import { whenIdle } from "../app/idle"
 import type { Parser } from "../parse/parser"
-import { buildRenderCache, CANVAS_BG, drawComponentBox, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
+import { buildRenderCache, CANVAS_BG, drawComponentBox, drawNetGlow, drawObjectOutline, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
 import { drawLabels } from "./labels"
-import { buildIndex, componentAt, hitTest, objectsIn, type PcbIndex } from "./hit"
+import { buildIndex, componentAt, hitsAt, hitTest, netAt, objectsIn, type HitOptions, type PcbHit, type PcbIndex } from "./hit"
 import { LayersPanel } from "./LayersPanel"
-import { componentSelection, netSelection, pcbHighlight } from "./selection"
+import { componentSelection, hitInSelection, hitLabel, hitPosition, hitSelection, netSelection, openPart, pcbHighlight, pcbNetName } from "./selection"
+import { PickMenu, type PickRow } from "./PickMenu"
 import type { PcbObject, PcbScene, PcbSceneComponent } from "./scene"
 import { usePcbScene } from "./use-scene"
 import { StackupDialog } from "./StackupDialog"
 import { LayerLegend } from "./LayerLegend"
 import { cycleCurrent, nextMode, onlyLayer, type LayerState } from "./layer-state"
+import { drawOrder } from "./layers"
 import { FlipHorizontal2 } from "lucide-react"
 
 export type { LayerState }
@@ -28,11 +30,18 @@ let consumedFocus = 0
 const CLICK_SLOP = 4
 const DIFF_REMOVED = "#ff4d4f"
 const DIFF_ADDED = "#3fd06a"
-const BITMAP_MARGIN = 0.5 // the offscreen board extends half a view beyond each edge
+// The offscreen board extends up to half a view beyond each edge, within a pixel budget: drawing cost
+// grows with its area, and on a large high-DPI screen a half-view margin made a 48-megapixel bitmap that
+// took the GPU 150+ ms per redraw. Past the margin a pan redraws at draft quality anyway.
+const BITMAP_MARGIN = 0.5
+const BITMAP_BUDGET = 16e6 // pixels
+const bitmapMargin = (viewPixels: number) => Math.max(0.05, Math.min(BITMAP_MARGIN, (Math.sqrt(BITMAP_BUDGET / viewPixels) - 1) / 2))
 const SETTLE_MS = 120
 const REDRAW_EVERY = 150
 const DRAFT_QUALITY = 0.5
 const HIT_PX = 3 // click tolerance in screen pixels
+const CYCLE_NOTE_MS = 1800
+const GLOW_TAU = 70 // ms: the Shift-hover net outline's fade time constant (about 95% in 3x this)
 
 
 export function defaultLayerState(scene: PcbScene): LayerState {
@@ -81,11 +90,27 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const redraw = useRef<(quality?: number) => void>(() => {})
 	const canvases = useRef<HTMLCanvasElement[]>([])
 	const blit = useRef<() => boolean>(() => false)
-	const timing = useRef({ board: 0, labels: 0 })
+	const timing = useRef({ board: 0, blit: 0 }) // ms: last board draw (into the bitmap), last view paint
 	const labelRules = useRef<{ isActive(o: PcbObject): boolean; isCurrent(o: PcbObject): boolean } | null>(null)
 	const bitmap = useRef<{ canvas: HTMLCanvasElement; camera: PcbCamera; at: number } | null>(null)
 	const selectedBox = useRef<number[] | null>(null)
+	// A selected pad's part: outlined as when hovered, so the pad shows which part it is on.
+	const padPart = useRef<number | null>(null)
+	// While Shift is held: the net that was under the cursor when it was pressed stays dark until the
+	// mouse moves onto another net (or off copper and back). quiet undefined: not known yet (taken from
+	// the first hover); armed: the glow follows the cursor from then on.
+	const shiftHover = useRef<{ quiet: string | null | undefined; armed: boolean } | null>(null)
 	const hoverComponent = useRef<number | null>(null)
+	// The object the pick menu's row under the mouse stands for: outlined on the live view.
+	const previewObject = useRef<number | null>(null)
+	// Shift-hover: the copper of the net under the cursor on the current layer gets a white outline. Each
+	// net has a fade level that eases toward 1 while it is hovered and back to 0 after.
+	const glow = useRef({ target: null as string | null, nets: new Map<string, number>(), frame: 0, last: 0 })
+	const glowRules = useRef<{ order: string[]; onlyCopper: string | null } | null>(null)
+	// Where the last click (or right-click) was, on the board: Shift+Tab steps through what is there.
+	const lastClick = useRef<{ x: number; y: number } | null>(null)
+	const [menu, setMenu] = useState<{ x: number; y: number; hits: PcbHit[]; nets: string[] } | null>(null)
+	const [cycleNote, setCycleNote] = useState<{ at: number; of: number; kind: string; label: string } | null>(null)
 
 	const load = usePcbScene(parser, data, projectData.status === "error" ? projectData.message : null)
 	const scene = load.status === "ready" ? load.scene : null
@@ -122,19 +147,22 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		// What is labelled, hovered and picked: in highlight mode only what is on the current layer (the
 		// rest of the board is greyed out), else everything shown.
 		const isActive = layers.mode === "highlight" ? (o: PcbObject) => isShown(o) && isCurrent(o) : isShown
-		// The layer the view is focused on, if any: the one shown on its own, or the highlighted one.
-		const focus = only ?? (layers.mode === "highlight" ? layers.current : null)
+		// Parts live on a side: one is hovered and picked only while the current layer is on its side (its
+		// copper, overlay, paste or mask). On an inner or unsided layer no part is, even though through-hole
+		// pads pass through it: a bottom-side lens holder held by two such pads is not a part on Mid-Layer 1.
+		const currentSide = scene.layers.find(l => l.key === layers.current)?.side
 		return {
 			isShown,
 			isCurrent,
 			isActive,
-			// What makes a part hoverable and pickable: the same, except that its through-hole pads, which
-			// pass through every copper layer, don't put it on the outer layer of the other side. A
-			// bottom-side lens holder held by two through-hole pads is not a part on Top.
-			isPartActive: (o: PcbObject, part: PcbSceneComponent) => isActive(o) && !(o.span && focus === (part.side === "top" ? "BOTTOM" : "TOP")),
+			// The shown layers in draw order, for the net glow.
+			order: drawOrder(scene.layers, layers.current, layers.flip ? "bottom" : "top").filter(k => (only ? k === only : layers.visible.has(k))),
+			onlyCopper: onlyCopper ? only : null,
+			isPartActive: (o: PcbObject, part: PcbSceneComponent) => currentSide === part.side && isActive(o),
 		}
 	}, [scene, layers])
 	labelRules.current = rules
+	glowRules.current = rules
 	useEffect(() => {
 		if (!scene || !layers) return
 		const entry = savedViews.get(scene)
@@ -142,6 +170,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		else savedViews.set(scene, { camera: null, layers })
 	}, [scene, layers])
 	selectedBox.current = highlight?.componentBox ?? null
+	const selectedPad = selection?.kind === "pcbObject" && !pane.mark ? scene?.objects[selection.id] : undefined
+	padPart.current = selectedPad?.kind === "pad" ? selectedPad.component : null
 
 	// Drawing.
 	// Rendering is two-step, so panning and zooming stay smooth: the board is drawn (with labels) into an
@@ -164,8 +194,9 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const slot = quality < 1 ? 1 : 0
 		let off = canvases.current[slot]
 		if (!off) off = canvases.current[slot] = document.createElement("canvas")
-		const width = Math.round(el.width * quality * (1 + 2 * BITMAP_MARGIN))
-		const height = Math.round(el.height * quality * (1 + 2 * BITMAP_MARGIN))
+		const margin = bitmapMargin(el.width * el.height)
+		const width = Math.round(el.width * quality * (1 + 2 * margin))
+		const height = Math.round(el.height * quality * (1 + 2 * margin))
 		if (off.width !== width || off.height !== height) {
 			off.width = width
 			off.height = height
@@ -185,13 +216,20 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			componentBox: null, // drawn on the live view (blit) so it stays crisp
 			tone,
 		})
-		const t1 = performance.now()
-		timing.current = { board: t1 - t0, labels: performance.now() - t1 }
+		timing.current.board = performance.now() - t0
 		bitmap.current = { canvas: off, camera: { ...cam }, at: performance.now() }
 		blit.current()
 	}
 	// Paints the current view from the bitmap. False when the bitmap leaves part of the view uncovered.
 	blit.current = () => {
+		const t0 = performance.now()
+		try {
+			return paint()
+		} finally {
+			timing.current.blit = performance.now() - t0
+		}
+	}
+	const paint = () => {
 		const el = canvas.current
 		const cam = camera.current
 		const b = bitmap.current
@@ -208,6 +246,9 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		ctx.fillRect(0, 0, el.width, el.height)
 		ctx.imageSmoothingEnabled = true
 		ctx.drawImage(b.canvas, cx - w / 2, cy - h / 2, w, h)
+		const g = glow.current
+		if (cache.current && glowRules.current && g.nets.size > 0)
+			drawNetGlow(ctx, cache.current, cam, { nets: [...g.nets].map(([net, level]) => ({ net, level })), ...glowRules.current })
 		// Labels are drawn on the live view, not into the bitmap, so they stay sharp and sized right
 		// while zooming instead of stretching with the bitmap and popping when it settles.
 		const idx = index.current
@@ -221,6 +262,10 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const hovered = hoverComponent.current !== null ? scene?.components[hoverComponent.current]?.box : undefined
 		if (hovered && hovered !== selectedBox.current) drawComponentBox(ctx, cam, hovered, false)
 		if (selectedBox.current) drawComponentBox(ctx, cam, selectedBox.current, true)
+		const padBox = padPart.current !== null ? scene?.components[padPart.current]?.box : undefined
+		if (padBox && padBox !== hovered) drawComponentBox(ctx, cam, padBox, false)
+		const previewed = previewObject.current !== null ? scene?.objects[previewObject.current] : undefined
+		if (previewed) drawObjectOutline(ctx, cam, previewed)
 		return cx - w / 2 <= 0 && cy - h / 2 <= 0 && cx + w / 2 >= el.width && cy + h / 2 >= el.height
 	}
 	// The part boxes are fitted to the 3D models once those are in (see fitBoxesToModels): repaint the
@@ -315,7 +360,10 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 				layers: () => layersRef.current,
 				timing: () => ({ ...timing.current }),
 				hover: () => hoverComponent.current,
+				padPart: () => padPart.current,
+				glow: () => ({ target: glow.current.target, nets: Object.fromEntries(glow.current.nets) }),
 				pick: (x: number, y: number) => pickRef.current({ x, y }),
+				hits: (x: number, y: number) => stackRef.current({ x, y }),
 				view(cx: number, cy: number, scale: number) {
 					camera.current = { ...camera.current!, cx, cy, scale }
 					redraw.current()
@@ -353,9 +401,13 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false, button: e.button }
 			fr.setPointerCapture?.(e.pointerId)
 		}
+		// Where the pointer is over the board (null off it): Shift pressed or released without moving
+		// hovers there.
+		let pointer: { x: number; y: number } | null = null
 		const onMove = (e: PointerEvent) => {
 			if (!drag) {
-				if (!inPanel(e)) hoverRef.current(toWorld(e.clientX, e.clientY))
+				pointer = inPanel(e) ? null : { x: e.clientX, y: e.clientY }
+				hoverRef.current(pointer && toWorld(pointer.x, pointer.y), e.shiftKey)
 				return
 			}
 			if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < CLICK_SLOP) return
@@ -368,8 +420,11 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			drag.y = e.clientY
 			schedule()
 		}
+		// A right-button drag pans; the menu its release would open is not wanted.
+		let pannedRight = false
 		const onUp = (e: PointerEvent) => {
 			const click = drag !== null && !drag.moved && drag.button === 0 && e.type === "pointerup"
+			pannedRight = drag !== null && drag.moved && drag.button === 2
 			drag = null
 			fr.classList.remove("panning")
 			if (click) clickRef.current(toWorld(e.clientX, e.clientY))
@@ -379,9 +434,33 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			if (inPanel(e)) return
 			doubleRef.current(toWorld(e.clientX, e.clientY))
 		}
-		const onLeave = () => hoverRef.current(null)
-		// Right-click does nothing here (no browser menu over the board).
-		const onMenu = (e: Event) => e.preventDefault()
+		const onLeave = () => {
+			pointer = null
+			// Coming back onto the board onto any net, the same one included, is moving onto it.
+			if (shiftHover.current) shiftHover.current.quiet = null
+			hoverRef.current(null, false)
+		}
+		// Pressing Shift glows nothing by itself: only moving onto a net afterwards does (see shiftHover).
+		const onShift = (e: KeyboardEvent) => {
+			if (e.key !== "Shift" || e.repeat) return
+			const down = e.type === "keydown"
+			shiftHover.current = down ? { quiet: pointer ? undefined : null, armed: false } : null
+			hoverRef.current(pointer && !drag ? toWorld(pointer.x, pointer.y) : null, down)
+		}
+		const onBlur = () => {
+			shiftHover.current = null
+			hoverRef.current(pointer && toWorld(pointer.x, pointer.y), false)
+		}
+		window.addEventListener("keydown", onShift)
+		window.addEventListener("keyup", onShift)
+		window.addEventListener("blur", onBlur)
+		// Right-click lists everything under the cursor (no browser menu over the board).
+		const onMenu = (e: MouseEvent) => {
+			e.preventDefault()
+			if (inPanel(e) || pannedRight) return void (pannedRight = false)
+			drag = null
+			menuRef.current(e.clientX, e.clientY, toWorld(e.clientX, e.clientY))
+		}
 		fr.addEventListener("contextmenu", onMenu)
 		const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => (resize(), redraw.current()))
 		fr.addEventListener("wheel", onWheel, { passive: false })
@@ -411,47 +490,139 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			fr.removeEventListener("dblclick", onDouble)
 			fr.removeEventListener("pointerleave", onLeave)
 			fr.removeEventListener("contextmenu", onMenu)
+			window.removeEventListener("keydown", onShift)
+			window.removeEventListener("keyup", onShift)
+			window.removeEventListener("blur", onBlur)
+			cancelAnimationFrame(glow.current.frame)
+			glow.current.frame = 0
 			ro?.disconnect()
 		}
 	}, [scene])
 
 	const fitRef = useRef<(b: [number, number, number, number], minWidth: number) => void>(() => {})
 	const clickRef = useRef<(p: { x: number; y: number }) => void>(() => {})
-	const pick = (p: { x: number; y: number }) => {
-		const idx = index.current
+	const hitOptions = (): HitOptions | null => {
 		const cam = camera.current
-		if (!scene || !idx || !cam || !layers || !rules) return null
-		return hitTest(idx, p.x, p.y, {
+		if (!cam || !layers || !rules) return null
+		return {
 			tolerance: (HIT_PX * (window.devicePixelRatio || 1)) / cam.scale,
 			isShown: rules.isActive,
 			isPartShown: rules.isPartActive,
 			current: layers.current,
 			side: layers.flip ? "bottom" : "top",
-		})
+			// A part's pads are reached by selecting the part first.
+			openPart: scene ? openPart(scene, selection, data?.compiled ?? null) : null,
+		}
+	}
+	const pick = (p: { x: number; y: number }) => {
+		const idx = index.current
+		const opts = hitOptions()
+		return scene && idx && opts ? hitTest(idx, p.x, p.y, opts) : null
+	}
+	// Everything under a point, in pick order (see hitsAt).
+	const stackAt = (p: { x: number; y: number }) => {
+		const idx = index.current
+		const opts = hitOptions()
+		return scene && idx && opts ? hitsAt(idx, p.x, p.y, opts) : []
 	}
 	const pickRef = useRef<(p: { x: number; y: number }) => ReturnType<typeof pick>>(() => null)
 	pickRef.current = pick
+	const stackRef = useRef<(p: { x: number; y: number }) => PcbHit[]>(() => [])
+	stackRef.current = stackAt
 	clickRef.current = p => {
 		const { select } = useAppStore.getState()
+		lastClick.current = p
+		setCycleNote(null)
 		const hit = pick(p)
 		if (!scene || !hit) return select(null)
+		// With something selected, a click outside it only clears the selection (and brings hover back).
+		if (selection && !hitInSelection(scene, hit, selection, data?.compiled ?? null)) return select(null)
 		if (hit.kind === "object") return select({ kind: "pcbObject", id: hit.id })
 		select(componentSelection(scene, hit.index, data?.compiled ?? null))
 	}
 	const doubleRef = useRef<(p: { x: number; y: number }) => void>(() => {})
+	// Double-click selects the net under the cursor, looking past a part to the copper it covers.
 	doubleRef.current = p => {
-		const hit = pick(p)
-		const net = hit?.kind === "object" ? scene?.objects[hit.id]?.net : null
+		const idx = index.current
+		const opts = hitOptions()
+		const net = idx && opts ? netAt(idx, p.x, p.y, opts) : null
 		if (net) useAppStore.getState().select(netSelection(net, data?.compiled ?? null))
 	}
-	// Hovering anywhere inside a part (shown in the current layer view) outlines its box.
-	const hoverRef = useRef<(p: { x: number; y: number } | null) => void>(() => {})
-	hoverRef.current = p => {
+	// Right-click: the menu of what is under the cursor, then the nets there.
+	const menuRef = useRef<(clientX: number, clientY: number, p: { x: number; y: number }) => void>(() => {})
+	menuRef.current = (clientX, clientY, p) => {
+		if (!scene) return
+		lastClick.current = p
+		const hits = stackAt(p)
+		const nets = [...new Set(hits.flatMap(h => (h.kind === "object" && scene.objects[h.id]!.net ? [scene.objects[h.id]!.net!] : [])))]
+		setMenu(hits.length ? { x: clientX, y: clientY, hits, nets } : null)
+	}
+	// Shift+Tab: the next thing under the last click after the one selected (wrapping round).
+	const cycleRef = useRef<() => void>(() => {})
+	cycleRef.current = () => {
+		const p = lastClick.current
+		if (!scene || !p) return
+		const hits = stackAt(p)
+		if (hits.length === 0) return
+		const compiled = data?.compiled ?? null
+		const at = (hitPosition(scene, hits, useAppStore.getState().selection, compiled) + 1) % hits.length
+		useAppStore.getState().select(hitSelection(scene, hits[at]!, compiled))
+		const { kind, label } = hitLabel(scene, hits[at]!, compiled)
+		setCycleNote({ at: at + 1, of: hits.length, kind, label })
+	}
+	// Hovering anywhere inside a part (shown in the current layer view) outlines its box, while nothing is
+	// selected. Holding Shift hovers nets instead: the net under the cursor on the current layer glows.
+	const hoverRef = useRef<(p: { x: number; y: number } | null, shift: boolean) => void>(() => {})
+	hoverRef.current = (p, shift) => {
 		const idx = index.current
-		const next = p && idx && rules ? componentAt(idx, p.x, p.y, rules.isPartActive) : null
+		const opts = hitOptions()
+		let net = p && shift && idx && rules && opts ? netAt(idx, p.x, p.y, { ...opts, isShown: o => rules.isActive(o) && rules.isCurrent(o), isPartShown: () => false }) : null
+		const held = shiftHover.current
+		if (shift && held && !held.armed && p) {
+			if (held.quiet === undefined) held.quiet = net
+			if (net === held.quiet) net = null
+			else held.armed = true
+		}
+		glowAt(net)
+		const next = p && !shift && !selection && idx && rules ? componentAt(idx, p.x, p.y, rules.isPartActive) : null
 		if (next === hoverComponent.current) return
 		hoverComponent.current = next
 		blit.current()
+	}
+	// A selection takes the hover box away until it is cleared.
+	useEffect(() => {
+		if (!selection || hoverComponent.current === null) return
+		hoverComponent.current = null
+		blit.current()
+	}, [selection])
+	// Point the glow at a net (or none) and ease every level toward its target, a frame at a time.
+	const glowAt = (net: string | null) => {
+		const g = glow.current
+		if (net === g.target) return
+		g.target = net
+		if (net !== null) {
+			// The hovered net is drawn last, over the ones fading out.
+			const level = g.nets.get(net) ?? 0
+			g.nets.delete(net)
+			g.nets.set(net, level)
+		}
+		if (g.frame) return
+		g.last = performance.now()
+		const step = (now: number) => {
+			const k = 1 - Math.exp(-(now - g.last) / GLOW_TAU)
+			g.last = now
+			let moving = false
+			for (const [n, level] of g.nets) {
+				const to = n === g.target ? 1 : 0
+				const next = level + (to - level) * k
+				if (to === 0 && next < 0.01) g.nets.delete(n)
+				else g.nets.set(n, Math.abs(to - next) < 0.005 ? to : next)
+				if (g.nets.has(n) && g.nets.get(n) !== to) moving = true
+			}
+			blit.current()
+			g.frame = moving ? requestAnimationFrame(step) : 0
+		}
+		g.frame = requestAnimationFrame(step)
 	}
 
 	// Frame the selection when another view or a panel link asks for it.
@@ -470,13 +641,18 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		return layerLink.subscribe(v => setLayers(v))
 	}, [layerLink, followsLayers])
 
-	// Keyboard: +/- step the current layer, Shift+S the layer mode, F mirrors, Esc clears the selection.
+	// Keyboard: +/- step the current layer, Shift+S the layer mode, F mirrors, Esc clears the selection,
+	// Shift+Tab steps through what is under the last click.
 	useEffect(() => {
 		if (!scene || !active || followsLayers) return
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
 			if (e.key === "Escape") useAppStore.getState().select(null)
 			if (e.ctrlKey || e.metaKey || e.altKey) return
+			if (e.key === "Tab" && e.shiftKey) {
+				e.preventDefault()
+				return cycleRef.current()
+			}
 			const change = (f: (s: LayerState) => LayerState) => {
 				e.preventDefault()
 				setLayers(prev => (prev ? f(prev) : prev))
@@ -489,6 +665,45 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		window.addEventListener("keydown", onKey)
 		return () => window.removeEventListener("keydown", onKey)
 	}, [scene, active, followsLayers])
+
+	// The cycle note fades after a moment; the next step or click replaces it.
+	useEffect(() => {
+		if (!cycleNote) return
+		const t = window.setTimeout(() => setCycleNote(null), CYCLE_NOTE_MS)
+		return () => clearTimeout(t)
+	}, [cycleNote])
+
+	// The pick menu's rows: each thing under the cursor (the selected one marked), then each net there.
+	const menuRows = (s: PcbScene, m: { hits: PcbHit[]; nets: string[] }): PickRow[] => {
+		const compiled = data?.compiled ?? null
+		const current = hitPosition(s, m.hits, selection, compiled)
+		const selectedNet = selection ? pcbNetName(selection, compiled)?.toUpperCase() : undefined
+		return [
+			...m.hits.map((h, i) => ({ key: `hit:${i}`, ...hitLabel(s, h, compiled), current: i === current })),
+			...m.nets.map((n, i) => ({ key: `net:${n}`, kind: "Net", label: n, detail: "", current: n.toUpperCase() === selectedNet, section: i === 0 ? "Nets" : undefined })),
+		]
+	}
+	// The row under the mouse outlines what it stands for on the board.
+	const previewRow = (key: string | null) => {
+		const hit = key?.startsWith("hit:") && menu ? menu.hits[Number(key.slice(4))] : undefined
+		previewObject.current = hit?.kind === "object" ? hit.id : null
+		hoverComponent.current = hit?.kind === "component" ? hit.index : null
+		blit.current()
+	}
+	const closeMenuRef = useRef(() => {})
+	closeMenuRef.current = () => {
+		setMenu(null)
+		previewRow(null)
+	}
+	const closeMenu = useRef(() => closeMenuRef.current()).current
+	const pickRow = (key: string) => {
+		if (!scene || !menu) return
+		const compiled = data?.compiled ?? null
+		const { select } = useAppStore.getState()
+		if (key.startsWith("net:")) select(netSelection(key.slice(4), compiled))
+		else select(hitSelection(scene, menu.hits[Number(key.slice(4))]!, compiled))
+		closeMenu()
+	}
 
 	return (
 		<div className="pcb-view" ref={frame} data-status={load.status}>
@@ -512,6 +727,15 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 					Mirrored · viewed from the bottom
 				</button>
 			)}
+			{cycleNote && (
+				<div className="pcb-cycle-note" role="status">
+					<span className="dim">
+						{cycleNote.at} / {cycleNote.of} · {cycleNote.kind}
+					</span>{" "}
+					{cycleNote.label}
+				</div>
+			)}
+			{menu && scene && <PickMenu x={menu.x} y={menu.y} rows={menuRows(scene, menu)} onPick={pickRow} onHover={previewRow} onClose={closeMenu} />}
 			{scene && layers && !followsLayers && <LayerLegend scene={scene} state={layers} onChange={setLayers} shifted={panelOpen && !pane.panelHost} />}
 			{/* A modal over the whole app (outside the board's pointer handling); side by side, the left board's. */}
 			{stackupOpen &&

@@ -24,6 +24,12 @@ export default function App() {
 		return () => window.removeEventListener("hashchange", onHash)
 	}, [])
 
+	// The browser tab: the open project's name, e.g. "PCBV-Camera"; just "PCBV" elsewhere.
+	const projectName = useAppStore(s => (s.screen.kind === "viewer" ? s.screen.project.name : null))
+	useEffect(() => {
+		document.title = projectName ? `PCBV-${projectName}` : "PCBV"
+	}, [projectName])
+
 	// Signing in re-applies the URL (a private project that couldn't open anonymously now can).
 	useEffect(() => {
 		if (signedIn) void applyRoute(currentRoute())

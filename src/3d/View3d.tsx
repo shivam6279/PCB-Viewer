@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import { EyeOff } from "lucide-react"
 import { useAppStore, type Projection3d } from "../app/store"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import type { Parser } from "../parse/parser"
-import { componentSelection, pcbComponentIndex, pcbHighlight } from "../pcb/selection"
+import { componentSelection, partIndex, partKey, partLabel, pcbComponentIndex, pcbHighlight } from "../pcb/selection"
 import type { PcbScene } from "../pcb/scene"
 import { BoardEngine, type CameraState } from "./engine"
+import { whenIdle } from "../app/idle"
 import { ObjectsPanel, type Objects3dState } from "./ObjectsPanel"
+import { ViewCube } from "./ViewCube"
 import { load3d, type Loaded3d } from "./prefetch"
 import { notFittedPaths, type ProjectVariant } from "../model/variants"
 
@@ -26,6 +29,7 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 	const panelOpen = useAppStore(s => s.view3dPanelOpen)
 	const projection = useAppStore(s => s.view3dProjection)
 	const variant = useAppStore(s => s.variant)
+	const hiddenParts = useAppStore(s => s.view3dHidden)
 	const data = projectData.status === "ready" ? projectData.data : null
 	const canvas = useRef<HTMLCanvasElement>(null)
 	const [loaded, setLoaded] = useState<Loaded3d | null | undefined>(undefined)
@@ -51,10 +55,21 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 		}
 	}, [parser, data])
 
+	// Building the engine blocks the main thread for a few hundred ms (shaders, meshes). Shown, it is built
+	// at once; built ahead while hidden, it waits until the user pauses, so it can't stall a pan or zoom in
+	// the view being used.
+	const [buildFor, setBuildFor] = useState<Loaded3d | null>(null)
+	useEffect(() => {
+		if (!loaded || buildFor === loaded) return
+		if (active) return setBuildFor(loaded)
+		return whenIdle(() => setBuildFor(loaded))
+	}, [loaded, active, buildFor])
+	const build = loaded !== null && buildFor === loaded
+
 	// One engine per board, built with every part in place, its shaders compiled before it is shown.
 	useEffect(() => {
 		const el = canvas.current
-		if (!el || !loaded) return
+		if (!el || !loaded || !build) return
 		const { scene, board, geometry, models } = loaded
 		const saved = savedViews.get(scene)
 		const me = {}
@@ -91,7 +106,7 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 			e.dispose()
 			setReady(null)
 		}
-	}, [loaded])
+	}, [loaded, build])
 
 	useEffect(() => {
 		if (!scene) return
@@ -116,6 +131,17 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 		ready.setNotFitted(hidden)
 		canvas.current?.setAttribute("data-not-fitted", String(hidden.size))
 	}, [ready, scene, variants, variant])
+
+	// Parts hidden by hand (Inspector / Objects panel), by partKey.
+	useEffect(() => {
+		if (!ready || !scene) return
+		const hidden = new Set<number>()
+		for (const key of hiddenParts) {
+			const i = partIndex(scene, key)
+			if (i >= 0) hidden.add(i)
+		}
+		ready.setHiddenParts(hidden)
+	}, [ready, scene, hiddenParts])
 
 	const highlight = useMemo(() => (scene && data ? pcbHighlight(scene, selection, data.compiled) : null), [scene, selection, data])
 	const selectedComponents = useMemo(() => {
@@ -164,7 +190,13 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 		ready?.setActive(active)
 		if (!active) return
 		const key = (e: KeyboardEvent) => {
+			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
 			if (e.key === "Escape") useAppStore.getState().select(null)
+			// F turns the board over about its centre.
+			if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
+				e.preventDefault()
+				ready?.flip()
+			}
 		}
 		window.addEventListener("keydown", key)
 		return () => window.removeEventListener("keydown", key)
@@ -187,6 +219,13 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 			)}
 			{status === "none" && <div className="view-message">This project has no board</div>}
 			{ready && <ProjectionToggle value={projection} shifted={panelOpen} />}
+			{ready && <ViewCube engine={ready} />}
+			{ready && hiddenParts.size > 0 && (
+				<button className="pcb-mirror-badge" onClick={() => useAppStore.getState().setView3dPanelOpen(true)}>
+					<EyeOff size={14} />
+					{hiddenParts.size} {hiddenParts.size === 1 ? "part" : "parts"} hidden
+				</button>
+			)}
 			{ready && panelOpen && (
 				<ObjectsPanel
 					state={objects}
@@ -196,6 +235,15 @@ export function View3d({ parser, active, readBoard, variants }: { parser: Parser
 					}}
 					onKinds={hiddenKinds => setObjects({ ...objects, hiddenKinds })}
 					onReset={() => setObjects({ ...objects, hiddenKinds: new Set() })}
+					hiddenParts={hiddenParts}
+					selectedPart={scene && selectedComponents?.size === 1 ? partKey(scene, [...selectedComponents][0]!) : null}
+					partLabel={key => (scene ? partLabel(scene, partIndex(scene, key), data?.compiled ?? null) : key)}
+					onHiddenParts={hidden => useAppStore.getState().setView3dHidden(hidden)}
+					onSelectPart={key => {
+						if (!scene || link.current) return
+						const i = partIndex(scene, key)
+						if (i >= 0) useAppStore.getState().select(componentSelection(scene, i, data?.compiled ?? null))
+					}}
 					onClose={() => useAppStore.getState().setView3dPanelOpen(false)}
 				/>
 			)}

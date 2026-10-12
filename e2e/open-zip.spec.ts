@@ -9,12 +9,15 @@ test("opening a zip parses in the worker and shows the project tree", async ({ p
 	page.on("pageerror", e => errors.push(e.message))
 
 	await page.goto("/")
+	await expect(page).toHaveTitle("PCBV")
 	await page.getByTestId("zip-input").setInputFiles({ name: "Cubli.zip", mimeType: "application/zip", buffer: zipTopLevel(CUBLI_DIR) })
 
 	const tree = page.getByRole("navigation", { name: "Project" })
 	await expect(tree.getByText("Top.SchDoc (Top)", { exact: true })).toBeVisible()
 	await expect(tree.getByText("ESC.SchDoc (U_ESC2)")).toBeVisible()
 	await expect(tree.getByText("Cubli.PcbDoc")).toBeVisible()
+	// The browser tab names the open project.
+	await expect(page).toHaveTitle("PCBV-Cubli")
 
 	await tree.getByText("Cubli.PcbDoc").click()
 	await expect(page.getByRole("tab", { name: "PCB" })).toHaveAttribute("aria-selected", "true")
@@ -22,5 +25,6 @@ test("opening a zip parses in the worker and shows the project tree", async ({ p
 
 	await page.getByLabel("Back to start").click()
 	await expect(page.getByText(/Drop an Altium project folder/)).toBeVisible()
+	await expect(page).toHaveTitle("PCBV")
 	expect(errors).toEqual([])
 })

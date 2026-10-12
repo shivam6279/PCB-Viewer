@@ -29,6 +29,28 @@ const TAN = Math.tan((FOV * Math.PI) / 360) // half the view height per mm of di
 const ROTATE_PER_PX = (0.4 * Math.PI) / 180
 const FIT_FILL = 0.83 // the fitted board's share of the view height
 const CLICK_SLOP = 4
+const FLIP_MS = 350 // F: the board turning over
+const FACE_MS = 400 // the view cube: turning to a face
+
+// The view cube's faces: how the camera sits looking straight at each (its right, up and back axes in
+// board terms; z out of the top, y up the board as the PCB view shows it). Bottom reads mirrored, as
+// the board turned over about its vertical axis.
+export type ViewAxis = "x" | "y" | "z"
+export type CubeFace = "top" | "bottom" | "front" | "back" | "left" | "right"
+export const CUBE_FACES: Record<CubeFace, { right: [number, number, number]; up: [number, number, number]; back: [number, number, number] }> = {
+	top: { right: [1, 0, 0], up: [0, 1, 0], back: [0, 0, 1] },
+	bottom: { right: [-1, 0, 0], up: [0, 1, 0], back: [0, 0, -1] },
+	front: { right: [1, 0, 0], up: [0, 0, 1], back: [0, -1, 0] },
+	back: { right: [-1, 0, 0], up: [0, 0, 1], back: [0, 1, 0] },
+	right: { right: [0, 1, 0], up: [0, 0, 1], back: [1, 0, 0] },
+	left: { right: [0, -1, 0], up: [0, 0, 1], back: [-1, 0, 0] },
+}
+
+export function faceQuaternion(face: CubeFace) {
+	const { right, up, back } = CUBE_FACES[face]
+	const m = new THREE.Matrix4().makeBasis(new THREE.Vector3(...right), new THREE.Vector3(...up), new THREE.Vector3(...back))
+	return new THREE.Quaternion().setFromRotationMatrix(m)
+}
 
 // The camera, relative to the board's geometric centre (middle of its outline, half-way through its
 // thickness), the fixed origin of every turn: its orientation, its distance from the plane through the
@@ -77,7 +99,11 @@ export class BoardEngine {
 	private autoFit = true // still on the opening view: re-fitted when the canvas gets its real size
 	private selected: Set<number> | null = null
 	private notFitted = new Set<number>() // components the shown variant leaves off: no body
+	private hiddenParts = new Set<number>() // components hidden by hand: no body
 	private frameRequest = 0
+	private turnFrame = 0 // a turn's animation frame (F, the view cube), while it turns
+	private turnEnd: (() => void) | null = null // puts the turn at its end
+	private readonly renderListeners = new Set<() => void>()
 	private active = true // the 3D tab is showing (else frames wait for idle time, see setActive)
 	private pendingIdle: (() => void) | null = null
 	private disposed = false
@@ -146,7 +172,21 @@ export class BoardEngine {
 	// The shown variant's not-fitted parts (component indexes): their bodies are not drawn or picked.
 	setNotFitted(components: Set<number>) {
 		this.notFitted = components
-		for (const mesh of this.parts.children) mesh.visible = !components.has(mesh.userData.component as number)
+		this.showParts()
+	}
+
+	// Parts hidden by hand (component indexes): like not-fitted ones, not drawn or picked.
+	setHiddenParts(components: Set<number>) {
+		this.hiddenParts = components
+		this.showParts()
+	}
+
+	private partShown(component: number | null) {
+		return component === null || (!this.notFitted.has(component) && !this.hiddenParts.has(component))
+	}
+
+	private showParts() {
+		for (const mesh of this.parts.children) mesh.visible = this.partShown(mesh.userData.component as number | null)
 		this.requestRender()
 	}
 
@@ -160,7 +200,7 @@ export class BoardEngine {
 		const mesh = failed ? failedBody(b, this.frame, this.mats) : bodyMesh(b, this.frame, this.mats, step)
 		if (!mesh) return
 		mesh.userData = { component: b.component, body: b, failed }
-		mesh.visible = b.component === null || !this.notFitted.has(b.component)
+		mesh.visible = this.partShown(b.component)
 		if (!mesh.geometry.boundsTree) mesh.geometry.computeBoundsTree() // STEP geometries are shared: once each
 		this.parts.add(mesh)
 		this.paint(mesh)
@@ -225,6 +265,7 @@ export class BoardEngine {
 	}
 
 	setView(view: CameraState) {
+		this.stopTurn()
 		this.autoFit = false
 		this.view = { offset: view.offset.clone(), quaternion: view.quaternion.clone(), distance: view.distance }
 		this.requestRender()
@@ -255,6 +296,93 @@ export class BoardEngine {
 	showSide(side: "top" | "bottom") {
 		const quaternion = sideQuaternion(side)
 		this.setView({ quaternion, distance: this.view.distance, offset: this.offsetOf(this.screenCentre(), quaternion) })
+	}
+
+	// F: the board turns over, top and bottom swapped: half a turn about an axis in the board's plane
+	// through the board centre, the screen's vertical laid flat on the board. From above that reads as a
+	// left-right turn; from the side (where the vertical is the board's normal, and the axis tends to
+	// the line of sight laid flat) the board turns over in place, its parts now hanging below. The
+	// camera keeps its place relative to the centre in its own frame, so the turn only changes the
+	// orientation; a point off the centre ends up mirrored across it.
+	flip() {
+		const from = this.view.quaternion.clone()
+		const flat = (v: THREE.Vector3) => v.applyQuaternion(from).setZ(0)
+		let axis = flat(new THREE.Vector3(0, 1, 0))
+		if (axis.lengthSq() < 1e-6) axis = flat(new THREE.Vector3(0, 0, 1))
+		axis.normalize()
+		this.animate(FLIP_MS, e => this.view.quaternion.setFromAxisAngle(axis, Math.PI * e).multiply(from))
+	}
+
+	// The view cube: turn to look straight at a face, the shortest way, about the same pivot as a mouse
+	// turn (the middle of the screen, on the board), so the point in the middle stays there.
+	showFace(face: CubeFace) {
+		this.stopTurn(true)
+		const from = this.getView()
+		const r = faceQuaternion(face).multiply(from.quaternion.clone().invert())
+		if (Math.abs(r.w) > 1 - 1e-9) return // already looking at it
+		const pivot = this.rotationPivot()
+		const board = this.orbitBoard()
+		const ortho = this.projection === "orthographic"
+		this.animate(FACE_MS, e => {
+			const next = orbit(from, board, pivot, new THREE.Quaternion().slerp(r, e))
+			// Orthographic: the distance is the zoom; keep it.
+			if (ortho) next.distance = from.distance
+			this.view = next
+		})
+	}
+
+	// Turns about one of the view's own axes (x right, y up, z towards the viewer) through the mouse-turn
+	// pivot: the view cube's arrows. turnAbout is immediate (an arrow dragged; pass the pivot taken when the
+	// drag started), stepTurn eases a whole step (an arrow clicked).
+	turnAbout(axis: ViewAxis, angle: number, pivot = this.rotationPivot()) {
+		this.stopTurn()
+		this.view = this.turned(this.view, axis, angle, pivot)
+		this.changed()
+	}
+
+	stepTurn(axis: ViewAxis, angle: number) {
+		this.stopTurn(true)
+		const from = this.getView()
+		const pivot = this.rotationPivot()
+		this.animate(FACE_MS, e => (this.view = this.turned(from, axis, angle * e, pivot)))
+	}
+
+	private turned(view: CameraState, axis: ViewAxis, angle: number, pivot: THREE.Vector3): CameraState {
+		const local = new THREE.Vector3(axis === "x" ? 1 : 0, axis === "y" ? 1 : 0, axis === "z" ? 1 : 0)
+		const r = new THREE.Quaternion().setFromAxisAngle(local.applyQuaternion(view.quaternion), angle)
+		const next = orbit(view, this.orbitBoard(), pivot, r)
+		// Orthographic: the distance is the zoom; keep it.
+		if (this.projection === "orthographic") next.distance = view.distance
+		return next
+	}
+
+	// A turn eased over `ms`: `at` sets the view for an eased share 0..1. A mouse press, wheel or new
+	// view stops it where it is; another turn first puts this one at its end.
+	private animate(ms: number, at: (eased: number) => void) {
+		this.stopTurn(true)
+		const start = performance.now()
+		const step = () => {
+			const t = Math.min((performance.now() - start) / ms, 1)
+			at(t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
+			this.changed()
+			this.turnFrame = t < 1 ? requestAnimationFrame(step) : 0
+			this.turnEnd = t < 1 ? () => at(1) : null
+		}
+		step()
+	}
+
+	private stopTurn(finish = false) {
+		if (!this.turnFrame) return
+		cancelAnimationFrame(this.turnFrame)
+		this.turnFrame = 0
+		if (finish) this.turnEnd?.()
+		this.turnEnd = null
+	}
+
+	// Called after every frame drawn (the view cube follows the camera).
+	onRender(listener: () => void) {
+		this.renderListeners.add(listener)
+		return () => void this.renderListeners.delete(listener)
 	}
 
 	private aspect() {
@@ -357,6 +485,7 @@ export class BoardEngine {
 			this.renderer.autoClear = true
 		}
 		this.timing.frame = performance.now() - started
+		for (const listener of this.renderListeners) listener()
 	}
 
 	// --- mouse ---------------------------------------------------------------------------------
@@ -365,6 +494,7 @@ export class BoardEngine {
 		const el = this.canvas
 		let drag: { button: number; x: number; y: number; startX: number; startY: number; moved: boolean; pivot: THREE.Vector3 | null } | null = null
 		const down = (e: PointerEvent) => {
+			this.stopTurn()
 			el.setPointerCapture(e.pointerId)
 			drag = { button: e.button, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, moved: false, pivot: e.button === 0 ? this.rotationPivot() : null }
 		}
@@ -387,6 +517,7 @@ export class BoardEngine {
 		}
 		const wheel = (e: WheelEvent) => {
 			e.preventDefault()
+			this.stopTurn()
 			const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY
 			this.zoomAt(e.clientX, e.clientY, Math.exp(px * 0.002))
 		}
@@ -414,6 +545,7 @@ export class BoardEngine {
 	// Trackball: the board turns about the view's own axes through the pivot, which stays in the middle
 	// of the screen, wherever the view has been panned or zoomed to.
 	rotate(dx: number, dy: number, pivot = this.rotationPivot()) {
+		this.stopTurn()
 		const q = this.view.quaternion
 		const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
 		const right = new THREE.Vector3(1, 0, 0).applyQuaternion(q)
@@ -539,10 +671,11 @@ export class BoardEngine {
 
 	stats() {
 		const meshes = this.parts.children as THREE.Mesh[]
-		return { bodies: meshes.length, failed: meshes.filter(m => m.userData.failed).length, boardMeshes: this.board.meshes.length }
+		return { bodies: meshes.length, shown: meshes.filter(m => m.visible).length, failed: meshes.filter(m => m.userData.failed).length, boardMeshes: this.board.meshes.length }
 	}
 
 	dispose() {
+		this.stopTurn()
 		this.disposed = true
 		cancelAnimationFrame(this.frameRequest)
 		this.pendingIdle?.()

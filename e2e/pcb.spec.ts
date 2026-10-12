@@ -54,12 +54,16 @@ async function zoomTo(page: Page, find: string, ticks = 8) {
 // PCB designators repeat per channel (J1_ESC on every ESC); the net tells channel 2's apart.
 const PAD = `s.objects.find(o => o.kind === "pad" && o.pad.name === "2" && o.net === "OUT_V_2" && /^J1/.test(s.components[o.component]?.designator))`
 
-test("clicking a pad shows the pad panel; its net link selects and frames the net", async ({ page }) => {
+test("a pad is reached through its part: the first click selects the part, the next the pad; its net link selects the net", async ({ page }) => {
 	await openCubliPcb(page)
 	await zoomTo(page, PAD)
 	const p = await clientOf(page, PAD)
 	await page.mouse.click(p.x, p.y)
+	await expect(page.getByRole("complementary", { name: "Component properties" })).toBeVisible()
+	await page.mouse.click(p.x, p.y)
 	const panel = page.getByRole("complementary", { name: "Pad properties" })
+	// The pad's part keeps its outline.
+	await expect.poll(() => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.padPart())).not.toBeNull()
 	await expect(panel.locator(".inspector-head .title")).toHaveText("J1_ESC_2-2")
 	await expect(panel).toContainText("OUT_V_2")
 	await expect(panel).toContainText("Plated")
@@ -211,7 +215,7 @@ test("the layer legend: current layer, modes, eyes, mirror; and their keys", asy
 	await expect(page.getByRole("tab", { name: "PCB" })).toHaveAttribute("aria-selected", "true")
 })
 
-test("right-click on the board opens no menu", async ({ page }) => {
+test("right-click on the board never opens the browser's menu", async ({ page }) => {
 	await openCubliPcb(page)
 	const prevented = await page.evaluate(() => {
 		const e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 900, clientY: 500 })
@@ -219,6 +223,198 @@ test("right-click on the board opens no menu", async ({ page }) => {
 		return e.defaultPrevented
 	})
 	expect(prevented).toBe(true)
+})
+
+// A Top-layer track running under a Top part, framed in the middle of the view: a click there picks the
+// part, so the track is reached only past it.
+async function trackUnderPart(page: Page) {
+	const found = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const s = pcb.scene
+		for (const o of s.objects) {
+			if (o.kind !== "track" || o.layer !== "TOP" || !o.net || o.component !== null) continue
+			const p = o.prims[0]
+			const x = (p.x1 + p.x2) / 2, y = (p.y1 + p.y2) / 2
+			const hit = pcb.pick(x, y)
+			if (hit?.kind !== "component") continue
+			const stack = pcb.hits(x, y)
+			if (!stack.some((h: any) => h.kind === "object" && h.id === o.id)) continue
+			if (stack.some((h: any) => h.kind === "object" && ["pad", "via"].includes(s.objects[h.id].kind))) continue // off its pads
+			pcb.view(x, y, pcb.camera().scale * 6)
+			return { x, y, id: o.id as number, net: o.net as string, part: hit.index as number, designator: s.components[hit.index].designator as string }
+		}
+		return null
+	})
+	if (!found) throw new Error("no Top track runs under a Top part")
+	await page.waitForTimeout(150)
+	const p = await page.evaluate(([x, y]) => (document.querySelector(".pcb-canvas") as any).__pcb.toClient(x, y), [found.x, found.y])
+	return { ...found, client: p as { x: number; y: number } }
+}
+
+test("double-clicking a track under a part selects the track's net", async ({ page }) => {
+	await openCubliPcb(page)
+	const t = await trackUnderPart(page)
+	await page.mouse.dblclick(t.client.x, t.client.y)
+	const panel = page.getByRole("complementary", { name: "Net properties" })
+	await expect(panel).toBeVisible()
+	await expect(panel.locator(".inspector-head .title")).toHaveText(t.net)
+})
+
+test("Shift+Tab steps the selection through everything under the last click", async ({ page }) => {
+	await openCubliPcb(page)
+	const t = await trackUnderPart(page)
+	await page.mouse.click(t.client.x, t.client.y)
+	await expect(page.getByRole("complementary", { name: "Component properties" })).toBeVisible()
+	const stack = await page.evaluate(([x, y]) => (document.querySelector(".pcb-canvas") as any).__pcb.hits(x, y), [t.x, t.y])
+	const position = stack.findIndex((h: any) => h.kind === "object" && h.id === t.id)
+	// The part is first; each Shift+Tab takes the next, and the note says which of how many.
+	for (let k = 1; k <= position; k++) await page.keyboard.press("Shift+Tab")
+	const panel = page.getByRole("complementary", { name: "Track properties" })
+	await expect(panel).toBeVisible()
+	await expect(panel.locator(".inspector-head .title")).toHaveText(t.net)
+	await expect(page.locator(".pcb-cycle-note")).toContainText(`${position + 1} / ${stack.length}`)
+	await shot(page, "pcb-shift-tab")
+	// Round the end of the stack, back to the part.
+	for (let k = position + 1; k <= stack.length; k++) await page.keyboard.press("Shift+Tab")
+	await expect(page.getByRole("complementary", { name: "Component properties" })).toBeVisible()
+})
+
+test("right-click lists what is under the cursor and the nets there; a row selects it", async ({ page }) => {
+	await openCubliPcb(page)
+	const t = await trackUnderPart(page)
+	await page.mouse.click(t.client.x, t.client.y, { button: "right" })
+	const menu = page.getByRole("menu", { name: "Objects here" })
+	await expect(menu).toBeVisible()
+	await expect(menu.getByRole("menuitem").first()).toContainText("Part")
+	const row = (kind: string) => menu.getByRole("menuitem").filter({ has: page.locator(".pick-menu-kind", { hasText: new RegExp(`^${kind}$`) }) }).filter({ hasText: t.net }).first()
+	const trackRow = row("Track")
+	await trackRow.hover()
+	await shot(page, "pcb-pick-menu")
+	await trackRow.click()
+	await expect(menu).toBeHidden()
+	const panel = page.getByRole("complementary", { name: "Track properties" })
+	await expect(panel).toBeVisible()
+	await expect(panel.locator(".inspector-head .title")).toHaveText(t.net)
+
+	// The net row selects the whole net; Esc closes the menu and keeps the selection.
+	await page.mouse.click(t.client.x, t.client.y, { button: "right" })
+	await row("Net").click()
+	await expect(page.getByRole("complementary", { name: "Net properties" })).toBeVisible()
+	await page.mouse.click(t.client.x, t.client.y, { button: "right" })
+	await expect(menu).toBeVisible()
+	await page.keyboard.press("Escape")
+	await expect(menu).toBeHidden()
+	await expect(page.getByRole("complementary", { name: "Net properties" })).toBeVisible()
+	// A press on the board outside the menu only closes it.
+	await page.mouse.click(t.client.x, t.client.y, { button: "right" })
+	await expect(menu).toBeVisible()
+	await page.mouse.click(t.client.x - 60, t.client.y - 60) // up-left: the menu hangs down-right of the cursor
+	await expect(menu).toBeHidden()
+	await expect(page.getByRole("complementary", { name: "Net properties" })).toBeVisible()
+})
+
+const hovered = (page: Page) => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
+
+test("with something selected no part box hovers; a click outside the selection only clears it", async ({ page }) => {
+	await openCubliPcb(page)
+	const t = await trackUnderPart(page)
+	// Beyond the part's box, down-left of it.
+	const away = await page.evaluate(i => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const [x0, y0, x1, y1] = pcb.scene.components[i].outline
+		return pcb.toClient(x0 - (x1 - x0) * 0.4, y0 - (y1 - y0) * 0.4)
+	}, t.part)
+	await page.mouse.move(t.client.x, t.client.y)
+	await expect.poll(() => hovered(page)).toBe(t.part)
+	await page.mouse.click(t.client.x, t.client.y)
+	const panel = page.getByRole("complementary", { name: "Component properties" })
+	await expect(panel).toBeVisible()
+	await expect.poll(() => hovered(page)).toBeNull()
+	await page.mouse.move(away.x, away.y)
+	await page.mouse.move(t.client.x, t.client.y)
+	expect(await hovered(page)).toBeNull()
+	// A click on the selected part keeps it; one off it clears the selection and picks nothing.
+	await page.mouse.click(t.client.x, t.client.y)
+	await expect(panel).toBeVisible()
+	await page.mouse.click(away.x, away.y)
+	await expect(page.locator(".inspector")).toHaveCount(0)
+	await page.mouse.move(t.client.x, t.client.y)
+	await expect.poll(() => hovered(page)).toBe(t.part)
+})
+
+test("with Shift held, moving onto a net outlines its copper on the current layer, fading in and out; pressing Shift alone does not", async ({ page }) => {
+	await openCubliPcb(page)
+	const glow = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.glow())
+	// A Top track a click picks (not under a part), framed in the middle of the view.
+	const { p, net } = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const o = pcb.scene.objects
+			.filter((o: any) => o.kind === "track" && o.net && o.layer === "TOP" && o.length > 100)
+			.find((o: any) => { const q = o.prims[0]; const h = pcb.pick((q.x1 + q.x2) / 2, (q.y1 + q.y2) / 2); return h?.kind === "object" && h.id === o.id })
+		const q = o.prims[0]
+		const x = (q.x1 + q.x2) / 2, y = (q.y1 + q.y2) / 2
+		pcb.view(x, y, pcb.camera().scale * 4)
+		return { p: pcb.toClient(x, y), net: o.net as string }
+	})
+	await page.waitForTimeout(150)
+	// A spot in view with no net there.
+	const corner = await page.evaluate(() => {
+		const el = document.querySelector(".pcb-canvas") as any
+		const pcb = el.__pcb
+		const r = el.getBoundingClientRect()
+		const cam = pcb.camera()
+		const dpr = window.devicePixelRatio || 1
+		for (let fy = 0.3; fy < 0.95; fy += 0.05)
+			for (let fx = 0.3; fx < 0.95; fx += 0.05) {
+				const cx = r.left + r.width * fx, cy = r.top + r.height * fy
+				const x = cam.cx + ((cam.flip ? -1 : 1) * (cx - r.left - r.width / 2) * dpr) / cam.scale
+				const y = cam.cy - ((cy - r.top - r.height / 2) * dpr) / cam.scale
+				if (!pcb.hits(x, y).some((h: any) => h.kind === "object" && pcb.scene.objects[h.id].net)) return { x: cx, y: cy }
+			}
+		throw new Error("no spot in view without copper")
+	})
+	// Shift pressed while already over the track: nothing glows, but the part boxes go.
+	await page.mouse.move(p.x, p.y)
+	await page.keyboard.down("Shift")
+	await page.waitForTimeout(300)
+	expect(await glow()).toMatchObject({ target: null, nets: {} })
+	expect(await hovered(page)).toBeNull()
+	// Off the copper and back onto the track: now its net's outline fades in.
+	await page.mouse.move(corner.x, corner.y)
+	await page.mouse.move(p.x, p.y)
+	const levels: number[] = await page.evaluate(
+		() =>
+			new Promise(done => {
+				const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+				const out: number[] = []
+				const t0 = performance.now()
+				const tick = () => {
+					const g = pcb.glow()
+					out.push(g.target ? (g.nets[g.target] ?? 0) : 0)
+					if (performance.now() - t0 < 400) requestAnimationFrame(tick)
+					else done(out)
+				}
+				tick()
+			}),
+	)
+	expect(levels.some(l => l > 0.05 && l < 0.95)).toBe(true) // eased, not switched
+	await expect.poll(async () => (await glow()).target).toBe(net)
+	await expect.poll(async () => (await glow()).nets[net]).toBe(1)
+	await shot(page, "pcb-shift-net-glow")
+	// Off the copper: the outline fades out.
+	await page.mouse.move(corner.x, corner.y)
+	await expect.poll(async () => (await glow()).target).toBeNull()
+	await expect.poll(async () => Object.keys((await glow()).nets).length).toBe(0)
+	// Back on the track, then Shift released: the glow goes; pressed again there, nothing glows.
+	await page.mouse.move(p.x, p.y)
+	await expect.poll(async () => (await glow()).target).toBe(net)
+	await page.keyboard.up("Shift")
+	await expect.poll(async () => (await glow()).target).toBeNull()
+	await expect.poll(async () => Object.keys((await glow()).nets).length).toBe(0)
+	await page.keyboard.down("Shift")
+	await page.waitForTimeout(200)
+	expect((await glow()).target).toBeNull()
+	await page.keyboard.up("Shift")
 })
 
 const camera = (page: Page) => page.evaluate(() => ((document.querySelector(".pcb-canvas") as any).__pcb as Pcb).camera())
@@ -393,6 +589,11 @@ test("a turned part's box turns with it (measured as placed at 0°)", async ({ p
 	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
 	await page.getByRole("tab", { name: "PCB" }).click()
 	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
+	// U1 is on the bottom: it is hovered only with a bottom-side layer current.
+	await page.mouse.move(800, 450)
+	const current = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().current as string)
+	for (let k = 0; k < 60 && (await current()) !== "BOTTOM"; k++) await page.keyboard.press("-")
+	expect(await current()).toBe("BOTTOM")
 	// U1 sits at 315°: its box edges run at 45° to the screen, and the box hugs the part (its area well
 	// under the axis-aligned extent's).
 	const u1 = await page.evaluate(() => {
@@ -515,13 +716,22 @@ test("highlight mode: only what is on the current layer can be hovered and picke
 	await expect(page.locator(".inspector")).toContainText("U13_ESC")
 })
 
-test("highlighting the other side's outer layer: a part held by through-hole pads is not on it", async ({ page }) => {
+test("a part is hovered and picked only while the current layer is on its side, never on inner layers", async ({ page }) => {
+	// PnP Camera's MP1: a bottom-side lens holder held by two through-hole mounting pads, which pass
+	// through every copper layer. That must not make it a part on Top or on an inner layer.
 	await page.goto("/")
 	await page.getByTestId("zip-input").setInputFiles({ name: "Camera.zip", mimeType: "application/zip", buffer: zipTopLevel(join(CORPUS, "PnP/Camera"), "Camera") })
 	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
 	await page.getByRole("tab", { name: "PCB" }).click()
 	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
-	// MP1: a bottom-side lens holder, two through-hole mounting pads; a point inside it clear of them.
+	const current = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().current as string)
+	const makeCurrent = async (layer: string) => {
+		for (let k = 0; k < 60 && (await current()) !== layer; k++) await page.keyboard.press("+")
+		expect(await current()).toBe(layer)
+	}
+	await page.mouse.move(800, 450)
+	await makeCurrent("BOTTOM")
+	// A point inside MP1, clear of its pads and of the smaller parts inside it.
 	const part = await page.evaluate(() => {
 		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
 		const i = pcb.scene.components.findIndex((c: any) => c.designator === "MP1")
@@ -537,26 +747,31 @@ test("highlighting the other side's outer layer: a part held by through-hole pad
 	})
 	expect(part.side).toBe("bottom")
 	const hovered = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.hover())
-	const current = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().current as string)
 	const hover = async () => {
 		await page.mouse.move(part.at.x + 2, part.at.y + 2)
 		await page.mouse.move(part.at.x, part.at.y)
 	}
+	const panel = page.getByRole("complementary", { name: "Component properties" })
+	const inner = await page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.scene.layers.find((l: any) => l.side === "inner").key as string)
+
 	await hover()
 	await expect.poll(hovered).toBe(part.index)
-
-	// Top highlighted: its pads pass through Top, but the part is not on it.
-	expect(await current()).toBe("TOP")
+	for (const layer of ["TOP", inner]) {
+		await makeCurrent(layer)
+		await hover()
+		await expect.poll(hovered).toBeNull()
+		await page.mouse.click(part.at.x, part.at.y)
+		await page.waitForTimeout(200)
+		await expect(panel).toHaveCount(0)
+	}
+	// Highlight mode on an inner layer: still nothing.
 	await page.keyboard.press("Shift+S")
 	await hover()
 	await expect.poll(hovered).toBeNull()
-	await page.mouse.click(part.at.x, part.at.y)
-	await page.waitForTimeout(200)
-	await expect(page.getByRole("complementary", { name: "Component properties" })).toHaveCount(0)
-
-	// Bottom highlighted: it is.
-	for (let k = 0; k < 40 && (await current()) !== "BOTTOM"; k++) await page.keyboard.press("-")
-	expect(await current()).toBe("BOTTOM")
+	// Any layer on its side: it is.
+	await makeCurrent("BOTTOMOVERLAY")
 	await hover()
 	await expect.poll(hovered).toBe(part.index)
+	await page.mouse.click(part.at.x, part.at.y)
+	await expect(panel).toBeVisible()
 })

@@ -34,7 +34,32 @@ export const PAD_HOLE = "#008b8b"
 export const VIA_HOLE = "#9b6400"
 const SELECT_OUTLINE = "#ff00ff"
 const POUR_ALPHA = 0.25
-const DIMMED = "grayscale(1) brightness(0.45)" // highlight mode: the layers other than the current one
+// Greyed colours: grayscale then brightness, as the CSS filters "grayscale(1) brightness(b)" would give,
+// but worked out per colour. A canvas `filter` re-renders every fill through a full-size offscreen
+// layer: on a large high-DPI view, with a dozen layers, that took over half a second per redraw.
+type Tint = (color: string) => string
+const NO_TINT: Tint = c => c
+const tints = new Map<number, Map<string, string>>()
+function greyed(brightness: number): Tint {
+	let memo = tints.get(brightness)
+	if (!memo) tints.set(brightness, (memo = new Map()))
+	return color => {
+		let out = memo!.get(color)
+		if (out === undefined) {
+			const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color)
+			if (!m) out = color
+			else {
+				const [r, g, b] = [m[1]!, m[2]!, m[3]!].map(h => parseInt(h, 16)) as [number, number, number]
+				const v = Math.min(255, Math.round((0.2126 * r + 0.7152 * g + 0.0722 * b) * brightness))
+				out = `rgb(${v}, ${v}, ${v})`
+			}
+			memo!.set(color, out)
+		}
+		return out
+	}
+}
+const DIMMED = greyed(0.45) // highlight mode: the layers other than the current one
+const GREYED = greyed(1.15) // a selection shown: the board under it
 const SELECTED_POUR_ALPHA = POUR_ALPHA // a selected net's pours stay translucent
 
 // A layer's shapes are split into a grid of chunks so a redraw only fills what is in view: filling a
@@ -125,7 +150,6 @@ export function drawPcb(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, st
 	const { canvas } = ctx
 	const { camera } = state
 	ctx.setTransform(1, 0, 0, 1, 0, 0)
-	ctx.filter = "none"
 	ctx.fillStyle = CANVAS_BG
 	ctx.fillRect(0, 0, canvas.width, canvas.height)
 	applyCamera(ctx, camera, canvas.width, canvas.height)
@@ -138,28 +162,22 @@ export function drawPcb(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, st
 	const order = drawOrder(cache.scene.layers, state.current, camera.flip ? "bottom" : "top")
 	const shown = (key: string) => (state.only ? key === state.only : state.visible.has(key))
 	const grey = state.highlight !== null
-	const normal = grey ? "grayscale(1) brightness(1.15)" : "none"
+	const normal = grey ? GREYED : NO_TINT
 	const dimmed = state.dimOthers && shown(state.current) && layerOf.has(state.current)
-	ctx.filter = dimmed ? DIMMED : normal
 
 	for (const key of order) {
 		if (!shown(key) || (dimmed && key === state.current)) continue
 		const layer = layerOf.get(key)
 		if (!layer) continue
-		drawLayer(ctx, cache, key, layer, state, view)
+		drawLayer(ctx, cache, key, layer, state, view, dimmed ? DIMMED : normal)
 	}
 	// Highlight mode: the current layer over everything, in its own colour (a via's ring on it too).
-	ctx.filter = normal
-	if (dimmed) drawLayer(ctx, cache, state.current, layerOf.get(state.current)!, state, view)
+	if (dimmed) drawLayer(ctx, cache, state.current, layerOf.get(state.current)!, state, view, normal)
 	// Holes go through everything, last, never dimmed: drawn whenever any copper (or the Multi-Layer)
 	// is shown.
-	if (order.some(k => shown(k) && (k === "MULTILAYER" || layerOf.get(k)?.group === "copper"))) drawHoles(ctx, cache, state.hiddenKinds, view)
+	if (order.some(k => shown(k) && (k === "MULTILAYER" || layerOf.get(k)?.group === "copper"))) drawHoles(ctx, cache, state.hiddenKinds, view, normal)
 
-	if (grey && state.highlight) {
-		ctx.filter = "none"
-		drawHighlight(ctx, cache, state, order.filter(shown), layerOf)
-	}
-	ctx.filter = "none"
+	if (grey && state.highlight) drawHighlight(ctx, cache, state, order.filter(shown), layerOf)
 }
 
 export function applyCamera(ctx: CanvasRenderingContext2D, camera: PcbCamera, width: number, height: number) {
@@ -177,8 +195,9 @@ function viewBox(camera: PcbCamera, width: number, height: number): Box {
 const overlaps = (a: Box, b: Box) => a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1]
 const grow = (a: Box, b: Box): Box => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])]
 
-function drawLayer(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, key: string, layer: PcbLayer, state: PcbDrawState, view: Box) {
-	ctx.fillStyle = layer.color
+function drawLayer(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, key: string, layer: PcbLayer, state: PcbDrawState, view: Box, tint: Tint) {
+	const color = tint(layer.color)
+	ctx.fillStyle = color
 	const parts: LayerCache[] = []
 	if (state.hiddenKinds.size === 0) {
 		const c = cache.layers.get(key)
@@ -195,18 +214,18 @@ function drawLayer(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, key: st
 	for (const c of chunks) ctx.fill(c.pour)
 	ctx.globalAlpha = LAYER_ALPHA
 	for (const c of chunks) ctx.fill(c.fill)
-	for (const c of chunks) for (const t of c.texts) drawText(ctx, t, layer.color, state.camera.flip)
+	for (const c of chunks) for (const t of c.texts) drawText(ctx, t, color, state.camera.flip)
 	ctx.globalAlpha = 1
 }
 
-function drawHoles(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, hiddenKinds: Set<string>, view: Box) {
+function drawHoles(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, hiddenKinds: Set<string>, view: Box, tint: Tint) {
 	ctx.globalAlpha = LAYER_ALPHA
 	if (!hiddenKinds.has("pad")) {
-		ctx.fillStyle = PAD_HOLE
+		ctx.fillStyle = tint(PAD_HOLE)
 		for (const c of cache.holes.pad) if (overlaps(c.bbox, view)) ctx.fill(c.fill)
 	}
 	if (!hiddenKinds.has("via")) {
-		ctx.fillStyle = VIA_HOLE
+		ctx.fillStyle = tint(VIA_HOLE)
 		for (const c of cache.holes.via) if (overlaps(c.bbox, view)) ctx.fill(c.fill)
 	}
 	ctx.globalAlpha = 1
@@ -411,5 +430,90 @@ export function drawComponentBox(ctx: CanvasRenderingContext2D, camera: PcbCamer
 	ctx.globalAlpha = 1
 	ctx.lineWidth = 2 * dpr
 	ctx.stroke(path)
+	ctx.restore()
+}
+
+// An object's outline on the live view, in the hover colour (the pick menu's row under the mouse).
+export function drawObjectOutline(ctx: CanvasRenderingContext2D, camera: PcbCamera, o: PcbObject) {
+	const path = new Path2D()
+	for (const p of o.prims) addPrim(path, p)
+	const dpr = globalThis.devicePixelRatio || 1
+	ctx.save()
+	applyCamera(ctx, camera, ctx.canvas.width, ctx.canvas.height)
+	ctx.strokeStyle = HOVER_COLOR
+	ctx.lineWidth = (2 * dpr) / camera.scale
+	ctx.stroke(path)
+	ctx.restore()
+}
+
+// Shift-hover: a white line round the hovered nets' copper on the live view, each at its own fade level
+// (a net's line brightens while the one left behind fades). Per layer, the net's copper is one merged
+// shape: stroked, then the shape itself cut back out, so only the outside edge is left. Overlapping
+// tracks, pads and vias get one outline between them, and a pour is outlined round its outer edge only
+// (its cut-outs are not). The line is a fixed number of screen pixels at any zoom.
+const netShapeCache = new WeakMap<PcbRenderCache, Map<string, Map<string, Path2D>>>()
+const OUTLINE_PX = 1.5 // CSS pixels
+const OUTLINE_COLOR = "#ffffff"
+let outlineCanvas: HTMLCanvasElement | null = null
+
+function netShapes(cache: PcbRenderCache, net: string, onlyCopper: string | null): Map<string, Path2D> {
+	let byNet = netShapeCache.get(cache)
+	if (!byNet) netShapeCache.set(cache, (byNet = new Map()))
+	const upper = net.toUpperCase()
+	const key = `${upper}\n${onlyCopper ?? ""}`
+	let out = byNet.get(key)
+	if (out) return out
+	out = new Map()
+	for (const o of cache.scene.objects) {
+		if (o.net === null || o.net.toUpperCase() !== upper || o.kind === "text") continue
+		// In single-layer mode a via or through-hole pad shows on that layer.
+		const layer = onlyCopper && o.span ? onlyCopper : o.layer
+		let path = out.get(layer)
+		if (!path) out.set(layer, (path = new Path2D()))
+		for (const p of o.prims) {
+			if (o.pour && p.t === "poly") addPrim(path, { t: "poly", rings: p.rings.slice(0, 1) })
+			else if (p.t !== "text") addPrim(path, p)
+		}
+	}
+	byNet.set(key, out)
+	return out
+}
+
+export function drawNetGlow(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, camera: PcbCamera, opts: {
+	nets: { net: string; level: number }[] // 0..1 each
+	order: string[] // the shown layers, in draw order
+	onlyCopper: string | null
+}) {
+	const { width, height } = ctx.canvas
+	if (!outlineCanvas) outlineCanvas = document.createElement("canvas")
+	if (outlineCanvas.width !== width || outlineCanvas.height !== height) {
+		outlineCanvas.width = width
+		outlineCanvas.height = height
+	}
+	const off = outlineCanvas.getContext("2d")
+	if (!off) return
+	const line = (2 * OUTLINE_PX * (globalThis.devicePixelRatio || 1)) / camera.scale // half of it is cut away
+	ctx.save()
+	ctx.setTransform(1, 0, 0, 1, 0, 0)
+	for (const { net, level } of opts.nets) {
+		if (level <= 0) continue
+		const shapes = netShapes(cache, net, opts.onlyCopper)
+		for (const key of opts.order) {
+			const shape = shapes.get(key)
+			if (!shape) continue
+			off.setTransform(1, 0, 0, 1, 0, 0)
+			off.globalCompositeOperation = "source-over"
+			off.clearRect(0, 0, width, height)
+			applyCamera(off, camera, width, height)
+			off.strokeStyle = OUTLINE_COLOR
+			off.lineWidth = line
+			off.lineJoin = "round"
+			off.stroke(shape)
+			off.globalCompositeOperation = "destination-out"
+			off.fill(shape)
+			ctx.globalAlpha = level
+			ctx.drawImage(outlineCanvas, 0, 0)
+		}
+	}
 	ctx.restore()
 }

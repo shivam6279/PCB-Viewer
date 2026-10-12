@@ -109,8 +109,13 @@ npm run index            # the GitHub index from the local PCB clone, into publi
 - Schematic net colours come from the compiled net (`ProjectData.wireColors`), so a colour on 12V also
   colours it where lower sheets call it V_GATE_DRIVE.
 - PCB interaction: hover/selection box = extent of the whole footprint except text, 2 px; only objects
-  shown in the current layer view can be hovered/picked; click inside a part picks the part; double-click
-  a net object selects the net; the camera + layer state survive tab switches (`savedViews` in PcbView).
+  shown in the current layer view can be hovered/picked; click inside a part picks the part, even on its pads:
+  a part's pads are picked only once it (or a pad of it) is selected (`openPart`; 3D picks pads first); double-click
+  selects the net under the cursor, looking past parts; right-click lists everything there; with
+  something selected there is no hover box (a selected pad's part stays outlined) and a click outside the
+  selection only clears it (`hitInSelection`); Shift-hover outlines (white, fixed screen width) the copper of the current layer's net under the cursor
+  (live view, per layer the merged shape stroked then cut out; eased per net: `drawNetGlow`), starting only when the mouse moves onto
+  a net after Shift is pressed (`shiftHover`); the camera + layer state survive tab switches (`savedViews` in PcbView).
 - 3D: colours from the board's `3DCONFIGURATION`; the bare board is the core (FR4) colour under the
   translucent mask; even lighting fixed to the board, no specular. STEP placement: top
   `T(x,y,dz)·Rz·Ry·Rx`, bottom `T(x,y,-T-dz)·Rx(180°)·Rz·Ry·Rx` (corpus test checks all 441 Cubli bodies).
@@ -121,7 +126,15 @@ npm run index            # the GitHub index from the local PCB clone, into publi
   built in the 3D worker (keep ALL serialised fields). A net/object highlight is a second render pass over
   a cleared depth buffer. Bump `CACHE_VERSION` in `step-mesh.ts` whenever mesh/colour output changes.
 - Keys: 1-4 switch SCH/PCB/3D/BOM (Viewer, `tabEnabled`); on PCB, Shift+S layer mode, Ctrl+Shift+wheel and
-  +/- step the current layer through the visible ones, F mirrors, Esc clears the selection.
-- Test hooks: `.pcb-canvas.__pcb` = `{ scene, toClient(x,y), camera(), layers(), view(cx,cy,scale), timing(), hover(), pick(x,y) }`;
+  +/- step the current layer through the visible ones, F mirrors, Esc clears the selection,
+  Shift+Tab steps the selection through everything under the last click (`hitsAt`; right-click lists it);
+  on 3D, F turns the board over (top <-> bottom): half a turn about the screen's vertical laid flat on the board,
+  through the board centre (from the side: the line of sight laid flat), eased (`flip`).
+- 3D view cube (`ViewCube.tsx`, top right, see-through, faces depth-sorted with preserve-3d): CSS 3D faces set from
+  the camera after every frame (`onRender`); a face click eases the view straight to that side about the
+  mouse-turn pivot (`showFace`, faces in `CUBE_FACES`); a drag on it turns the board; hover arrows turn about one
+  view axis (`stepTurn` a quarter turn on click, `turnAbout` on drag).
+- Browser tab title: `PCBV-<project name>` while a project is open, else `PCBV` (App.tsx).
+- Test hooks: `.pcb-canvas.__pcb` = `{ scene, toClient(x,y), camera(), layers(), view(cx,cy,scale), timing(), hover(), padPart(), glow(), pick(x,y), hits(x,y) }`;
   SVG schematic records carry `data-i` (record index), `data-k` (kind), `data-o` (owner).
   `.view3d-canvas.__view3d` = the BoardEngine (`toClient`, `stats()`, `rotationPivot()`, `fitView`, `setView`, `pick`).

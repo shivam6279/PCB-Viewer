@@ -1,7 +1,8 @@
 import { ChevronLeft, Search } from "lucide-react"
 import type { ReactNode } from "react"
 
-export function TopBar({ title, subtitle, onBack, children }: { title: string; subtitle: string; onBack(): void; children?: ReactNode }) {
+// onSearch opens the project search; without it (nothing loaded yet, or a diff) the icon is disabled.
+export function TopBar({ title, subtitle, onBack, onSearch, children }: { title: string; subtitle: string; onBack(): void; onSearch?(): void; children?: ReactNode }) {
 	return (
 		<header className="topbar">
 			<button className="topbar-back" aria-label="Back to start" onClick={onBack}>
@@ -13,7 +14,7 @@ export function TopBar({ title, subtitle, onBack, children }: { title: string; s
 			</div>
 			<div className="topbar-end">
 				{children}
-				<button className="icon-btn topbar-search-icon" aria-label="Search">
+				<button className="icon-btn topbar-search-icon" aria-label="Search" disabled={!onSearch} onClick={onSearch}>
 					<Search size={17} />
 				</button>
 			</div>
