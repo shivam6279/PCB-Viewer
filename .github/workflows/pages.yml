@@ -14,9 +14,11 @@ permissions:
   pages: write
   id-token: write
 
+# A running deploy finishes and the next waits: cancelling one mid-way threw away the board pictures it
+# had drawn (they are stored at its end), and the next started them all over.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
