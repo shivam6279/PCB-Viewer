@@ -588,7 +588,9 @@ export function View3d({
 	const status = ready ? "ready" : loaded === null ? "none" : "loading"
 	return (
 		<div className={`view3d${measuring ? " measuring" : ""}`} data-status={status}>
-			<canvas ref={canvas} className="view3d-canvas" style={{ visibility: ready ? "visible" : "hidden" }} />
+			{/* Hidden until ready, then left to inherit: "visible" here would show it through the home screen
+			    while the viewer is parked behind it (visibility: hidden on the host). */}
+			<canvas ref={canvas} className="view3d-canvas" style={{ visibility: ready ? undefined : "hidden" }} />
 			<canvas ref={overlay} className="measure-overlay" aria-hidden="true" />
 			{ready && measuring && <MeasureBar view="3d" />}
 			{ready && measuring && <MeasureLegend />}

@@ -302,7 +302,8 @@ button { font: inherit; color: inherit; }
 .gh-switch-error { color: var(--warning); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* Home: top bar, project tree, main panel */
-.home { display: grid; height: 100%; grid-template-rows: var(--topbar-height) 1fr; grid-template-columns: var(--sidebar-width) 1fr; }
+/* Opaque: the viewer parked behind it (.viewer-host.parked) must never show through. */
+.home { display: grid; height: 100%; grid-template-rows: var(--topbar-height) 1fr; grid-template-columns: var(--sidebar-width) 1fr; background: var(--bg-chrome); }
 .home-topbar { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(140px, 1fr) minmax(120px, 460px) minmax(max-content, 1fr); align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .home-brand { display: flex; align-items: center; gap: 12px; line-height: 1.35; min-width: 0; }
 .home-brand-name { font-weight: 600; }
