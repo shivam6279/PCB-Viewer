@@ -29,8 +29,15 @@ async function hash(bytes: Uint8Array): Promise<string> {
 
 const inFlight = new Map<string, Promise<StepMesh | null>>()
 
-// One STEP file as a mesh: from the cache, or converted (and cached).
+// Whether a file is STEP at all. Footprints can embed other CAD formats (a SolidWorks .sldprt, read by
+// Altium through its own licensed import); those aren't converted, the part shows as missing.
+export function isStep(bytes: Uint8Array): boolean {
+	return new TextDecoder().decode(bytes.subarray(0, 64)).trimStart().startsWith("ISO-10303-21")
+}
+
+// One STEP file as a mesh: from the cache, or converted (and cached). Null when it can't be read.
 export async function stepMesh(bytes: Uint8Array): Promise<StepMesh | null> {
+	if (!isStep(bytes)) return null
 	const key = `step:${CACHE_VERSION}:${await hash(bytes)}`
 	let pending = inFlight.get(key)
 	if (!pending) {

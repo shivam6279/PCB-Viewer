@@ -70,6 +70,10 @@ export interface ComponentMaterials {
 	lit: THREE.MeshPhongMaterial // the same, never dimmed: the selected part
 	flat: Map<string, THREE.MeshPhongMaterial> // extruded bodies, by colour + opacity + lit
 	translucent: Map<string, THREE.MeshPhongMaterial> // STEP bodies with an opacity below 1
+	// A part whose model couldn't be read: its space drawn as a dashed outline in "missing" magenta (it
+	// has to stand out on gold pads and any mask colour; lit: selected, white), the
+	// inside invisible but still picked.
+	missing: { fill: THREE.MeshBasicMaterial; edge: THREE.LineDashedMaterial; edgeLit: THREE.LineDashedMaterial }
 }
 
 // The material for a STEP body: vertex-coloured, translucent at the body's 3D opacity (an LED lens
@@ -88,7 +92,9 @@ export function stepMaterial(mats: ComponentMaterials, opacity: number, lit: boo
 
 export function componentMaterials(dimmer: Dimmer): ComponentMaterials {
 	const make = () => new THREE.MeshPhongMaterial({ vertexColors: true, specular: 0x000000, side: THREE.DoubleSide })
-	return { dimmer, solid: dimmable(make(), dimmer), lit: make(), flat: new Map(), translucent: new Map() }
+	const edge = (color: number) => new THREE.LineDashedMaterial({ color, dashSize: 0.5, gapSize: 0.3 })
+	const missing = { fill: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }), edge: edge(0xff3fd2), edgeLit: edge(0xffffff) }
+	return { dimmer, solid: dimmable(make(), dimmer), lit: make(), flat: new Map(), translucent: new Map(), missing }
 }
 
 export function flatMaterial(mats: ComponentMaterials, color: Rgb, opacity: number, lit: boolean): THREE.MeshPhongMaterial {
@@ -115,15 +121,22 @@ export function bodyMesh(b: Board3dBody, f: BoardFrame, mats: ComponentMaterials
 		mesh.matrix.copy(bodyMatrix(b, f))
 		return mesh
 	}
-	if (b.model) return null // waiting for the model (or it failed: see failedBody)
+	if (b.model) return null // waiting for the model (or it couldn't be read: see missingBody)
 	const g = extrudedBody(b, f)
 	return g ? new THREE.Mesh(g, flatMaterial(mats, b.color, b.opacity, false)) : null
 }
 
-// A model that could not be converted shows as a grey block over its outline.
-export function failedBody(b: Board3dBody, f: BoardFrame, mats: ComponentMaterials): THREE.Mesh | null {
+// A model that couldn't be read (not STEP, or a STEP the converter fails on): nothing is drawn in its
+// place but the space the board gives the part (its outline and height), as a dashed outline.
+export function missingBody(b: Board3dBody, f: BoardFrame, mats: ComponentMaterials): THREE.Mesh | null {
 	const g = extrudedBody(b, f)
-	return g ? new THREE.Mesh(g, flatMaterial(mats, [0.5, 0.5, 0.5], 1, false)) : null
+	if (!g) return null
+	const mesh = new THREE.Mesh(g, mats.missing.fill)
+	const edges = new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), mats.missing.edge)
+	edges.computeLineDistances()
+	edges.raycast = () => {}
+	mesh.add(edges)
+	return mesh
 }
 
 export type { Board3d }

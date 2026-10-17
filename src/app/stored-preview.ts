@@ -24,7 +24,7 @@ export type StoredPreview = BoardPreview | { none: true }
 
 // Raised whenever the pictures would come out differently (model colours read better, a new camera):
 // a picture is kept under the version it was drawn by, so the next deploy draws them all again.
-const RENDER_VERSION = 2
+const RENDER_VERSION = 3
 
 // Where a project's picture is kept, under the site: previews/<owner>/<repo>/r<version>/<commit>/<the
 // project file's path>.json.

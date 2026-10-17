@@ -13,7 +13,7 @@ import { circleAt, snapAt } from "../measure/snap"
 import type { Board3d, Board3dBody } from "./board3d"
 import type { BoardGeometry, GeoMesh } from "./board-geometry"
 import { buildBoardLayers, buildHighlight, geometryOf, type BoardLayers } from "./board-layers"
-import { bodyMesh, componentMaterials, failedBody, flatMaterial, stepMaterial, type ComponentMaterials } from "./components"
+import { bodyMesh, componentMaterials, flatMaterial, missingBody, stepMaterial, type ComponentMaterials } from "./components"
 import { boardFrame, MM, type BoardFrame } from "./frame"
 import { orbit, pivotOf } from "./orbit"
 import { createDimmer, dimmable, srgb, type Dimmer } from "./materials"
@@ -434,7 +434,7 @@ export class BoardEngine {
 	}
 
 	private addBody(b: Board3dBody, step: StepMesh | null, failed = false) {
-		const mesh = failed ? failedBody(b, this.frame, this.mats) : bodyMesh(b, this.frame, this.mats, step)
+		const mesh = failed ? missingBody(b, this.frame, this.mats) : bodyMesh(b, this.frame, this.mats, step)
 		if (!mesh) return
 		mesh.userData = { component: b.component, body: b, failed }
 		mesh.visible = this.partShown(b.component)
@@ -463,11 +463,11 @@ export class BoardEngine {
 		const component = mesh.userData.component as number | null
 		const body = mesh.userData.body as Board3dBody
 		const lit = this.selected !== null && component !== null && this.selected.has(component)
-		if (body.model !== null && !mesh.userData.failed) mesh.material = stepMaterial(this.mats, body.opacity, lit)
-		else {
-			const failed = mesh.userData.failed as boolean
-			mesh.material = flatMaterial(this.mats, failed ? [0.5, 0.5, 0.5] : body.color, failed ? 1 : body.opacity, lit)
-		}
+		if (mesh.userData.failed) {
+			const edges = mesh.children[0] as THREE.LineSegments | undefined
+			if (edges) edges.material = lit ? this.mats.missing.edgeLit : this.mats.missing.edge
+		} else if (body.model !== null) mesh.material = stepMaterial(this.mats, body.opacity, lit)
+		else mesh.material = flatMaterial(this.mats, body.color, body.opacity, lit)
 	}
 
 	// --- camera --------------------------------------------------------------------------------
