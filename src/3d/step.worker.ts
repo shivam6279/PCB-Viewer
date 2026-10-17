@@ -4,7 +4,7 @@ import { expose, transfer } from "comlink"
 import occtFactory from "occt-import-js"
 import wasmUrl from "occt-import-js/dist/occt-import-js.wasm?url"
 import type { StepMesh } from "./step-mesh"
-import { stepStyles } from "./step-styles"
+import { pairSolids, stepStyles } from "./step-styles"
 
 const srgbToLinear = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4))
 
@@ -13,22 +13,23 @@ const load = () => (occt ??= occtFactory({ locateFile: () => wasmUrl }))
 
 // A STEP file read by occt, with each face's colour: occt's own, else the file's styles read from its
 // text (StepStyles: the importer misses some files' styles and resolves part-vs-solid colours
-// inconsistently), mapped by solid and face order when the shapes agree. occt-import-js reports
-// colours linearised; the file's own values are sRGB.
+// inconsistently), each mesh paired with the solid it is drawn from (pairSolids: by order, or by face
+// count where a sub-part is placed more than once). occt-import-js reports colours linearised; the
+// file's own values are sRGB.
 async function read(bytes: Uint8Array) {
 	const o = await load()
 	const r = o.ReadStepFile(bytes, { linearUnit: "millimeter", linearDeflectionType: "bounding_box_ratio", linearDeflection: 0.001, angularDeflection: 0.5 })
 	if (!r?.success) return null
 	const styles = stepStyles(new TextDecoder().decode(bytes))
-	const matches = styles !== null && styles.solids.length === r.meshes.length
 	const meshes = r.meshes as any[]
+	const solidOf = styles ? pairSolids(meshes.map(m => (m.brep_faces ?? []).length), styles.solids) : []
 	// A mesh's colour, and its faces' (undefined: none of their own).
 	const meshColour = (meshIndex: number): number[] | undefined =>
-		(matches ? lin(styles!.solids[meshIndex]!.color) : undefined) ?? meshes[meshIndex].color ?? (styles?.colors.length === 1 ? lin(styles.colors[0]) : undefined)
+		lin(solidOf[meshIndex]?.color) ?? meshes[meshIndex].color ?? (styles?.colors.length === 1 ? lin(styles.colors[0]) : undefined)
 	const faceColour = (meshIndex: number, faceIndex: number): number[] | undefined => {
 		const f = (meshes[meshIndex].brep_faces ?? [])[faceIndex]
 		if (f?.color) return f.color
-		const faces = matches ? styles!.solids[meshIndex]!.faces : null
+		const faces = solidOf[meshIndex]?.faces
 		return faces && faces.length === (meshes[meshIndex].brep_faces ?? []).length ? lin(faces[faceIndex]) : undefined
 	}
 	return { root: r.root, meshes, meshColour, faceColour }

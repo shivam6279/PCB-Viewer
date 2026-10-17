@@ -106,3 +106,25 @@ export function stepStyles(text: string): StepStyles | null {
 	for (const { color } of styled.values()) seen.set(color.join(","), color)
 	return { solids, colors: [...seen.values()] }
 }
+
+// Each mesh occt read (by its face count) paired with the file's solid it is drawn from, or undefined.
+// One to one when the counts agree. When occt returns more meshes than the file has solids, a sub-part
+// placed several times was read once per placement (XBee S2C: one 2 mm header part placed twice, so 41
+// meshes for 21 solids): meshes are then paired with solids of the same face count, in order, each
+// placement starting the solids over. A face count whose meshes don't come in whole multiples of its
+// solids is left unpaired rather than guessed.
+export function pairSolids(meshFaces: number[], solids: StepSolid[]): (StepSolid | undefined)[] {
+	if (meshFaces.length === solids.length) return [...solids]
+	const byFaces = new Map<number, StepSolid[]>()
+	for (const s of solids) byFaces.set(s.faces.length, [...(byFaces.get(s.faces.length) ?? []), s])
+	const meshesWith = new Map<number, number>()
+	for (const n of meshFaces) meshesWith.set(n, (meshesWith.get(n) ?? 0) + 1)
+	const seen = new Map<number, number>()
+	return meshFaces.map(n => {
+		const group = byFaces.get(n)
+		if (!group || meshesWith.get(n)! % group.length !== 0) return undefined
+		const k = seen.get(n) ?? 0
+		seen.set(n, k + 1)
+		return group[k % group.length]
+	})
+}

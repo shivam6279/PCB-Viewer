@@ -22,10 +22,14 @@ export interface BoardPreview {
 // What the deploy stores per project and commit: the picture and its facts, or `none` without a board.
 export type StoredPreview = BoardPreview | { none: true }
 
-// Where a project's picture is kept, under the site: previews/<owner>/<repo>/<commit>/<the project
-// file's path>.json.
+// Raised whenever the pictures would come out differently (model colours read better, a new camera):
+// a picture is kept under the version it was drawn by, so the next deploy draws them all again.
+const RENDER_VERSION = 2
+
+// Where a project's picture is kept, under the site: previews/<owner>/<repo>/r<version>/<commit>/<the
+// project file's path>.json.
 export function storedPreviewPath(ref: RepoRef, sha: string, prjPath: string): string {
-	return ["previews", ref.owner, ref.repo, sha, ...`${prjPath}.json`.split("/")].map(encodeURIComponent).join("/")
+	return ["previews", ref.owner, ref.repo, `r${RENDER_VERSION}`, sha, ...`${prjPath}.json`.split("/")].map(encodeURIComponent).join("/")
 }
 
 // The deploy's list for a repo: the branch head it was made at, and per project the commit its picture

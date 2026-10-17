@@ -12,7 +12,7 @@ export interface StepMesh {
 	index: Uint32Array
 }
 
-const CACHE_VERSION = 6
+const CACHE_VERSION = 7
 const pool: Remote<StepWorkerApi>[] = []
 let next = 0
 const POOL_SIZE = Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency ?? 2) - 1))

@@ -3,7 +3,7 @@
 // browser:   node tools/render-previews.mjs <built site> <store>
 // <built site>: the site after `npm run build` and tools/build-index.mjs (the index is what lists the
 // projects and their commits; no GitHub API). <store>: the folder kept on the repo's previews branch,
-// laid out as the site serves it (previews/<owner>/<repo>/<commit>/<project path>.json). Only pictures
+// laid out as the site serves it (previews/<owner>/<repo>/r<version>/<commit>/<project path>.json). Only pictures
 // the store lacks are drawn; every one in the store is then copied into the site, with a list per repo
 // (previews/<owner>/<repo>/index.json) of which commit each project's picture is at.
 // Env: RENDER_BUDGET_MIN (default 25): no new picture is started after this long, the rest wait for
