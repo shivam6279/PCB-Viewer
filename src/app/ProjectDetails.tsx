@@ -1,6 +1,5 @@
 import { ArrowRight, ChevronRight, GitBranch } from "lucide-react"
-import type { BoardPreview, BoardStats } from "../3d/board-preview"
-import { Fragment, useEffect, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import type { ChangedFile, CommitDetails, CommitInfo, GitHub } from "../github/github"
 import { ProjectHistory } from "../github/history"
 import { handleAuthError } from "../github/session"
@@ -9,6 +8,7 @@ import { formatDate } from "./format-date"
 import { navigate } from "./github-open"
 import { openingLabel, useOpening } from "./opening"
 import { historyFolders } from "./project-history"
+import { previewManifest, storedPreview, type BoardPreview, type BoardStats } from "./stored-preview"
 import { Spinner } from "./Spinner"
 import { ProjectIcon } from "./tree-icons"
 
@@ -42,6 +42,13 @@ function Details(props: { gh: GitHub } & ProjectRef) {
 	const live = useRef(true)
 	const opening = useOpening(s => s.opening)
 	const [expanded, setExpanded] = useState<string | null>(null) // the commit opened up below its row
+	// The deploy's list of each project's picture commit and history folders (null: none published).
+	const manifest = useMemo(() => previewManifest(ref), [])
+	const [previewSha, setPreviewSha] = useState<string | null>(null)
+	const [preview, setPreview] = useState<PreviewState>("loading")
+	// The page shows all at once: a placeholder until the history and the picture are both in (the
+	// picture found, absent, or being drawn), or REVEAL_MS at the most.
+	const [revealed, setRevealed] = useState(false)
 
 	const fail = (e: unknown) => {
 		if (!live.current || handleAuthError(e)) return
@@ -52,13 +59,18 @@ function Details(props: { gh: GitHub } & ProjectRef) {
 		live.current = true
 		;(async () => {
 			const branch = props.branch ?? (await gh.repoInfo(ref)).defaultBranch
-			const [branches, head] = await Promise.all([gh.branches(ref), gh.head(ref, branch)])
-			const folders = await historyFolders(gh, ref, head.sha, prjPath)
+			const [branches, head, m] = await Promise.all([gh.branches(ref), gh.head(ref, branch), manifest])
+			// The published list holds the folders as of the branch head it was made at: still right while
+			// that is the head (it saves reading the project file).
+			const listed = m && m.branch === branch && m.head === head.sha ? m.projects[prjPath] : undefined
+			const folders = listed?.folders ?? (await historyFolders(gh, ref, head.sha, prjPath))
 			const history = ProjectHistory.forRepo(gh, ref, branch, folders)
 			const first = await history.loadMore()
 			if (!live.current) return
 			setLoaded({ branch, branches, head, history })
 			setCommits(first)
+			if (first[0]) setPreviewSha(first[0].sha)
+			else setPreview(null)
 		})()
 			.catch(fail)
 			.finally(() => live.current && setBusy(false))
@@ -66,6 +78,46 @@ function Details(props: { gh: GitHub } & ProjectRef) {
 			live.current = false
 		}
 	}, [])
+
+	// The published picture asked for at once, by the list's commit for it, alongside the history: by the
+	// time the history says which commit it is, it is usually in.
+	useEffect(() => {
+		void manifest.then(m => {
+			const listed = m?.projects[prjPath]
+			if (listed) void storedPreview(ref, listed.sha, prjPath)
+		})
+		const t = setTimeout(() => live.current && setRevealed(true), REVEAL_MS)
+		return () => clearTimeout(t)
+	}, [])
+
+	// The picture at the newest commit touching the project: the published one, else drawn here.
+	useEffect(() => {
+		if (!previewSha) return
+		let on = true
+		let abandon = () => {}
+		setPreview("loading")
+		;(async () => {
+			const stored = await storedPreview(ref, previewSha, prjPath)
+			if (!on) return
+			if (stored !== undefined) return setPreview(stored)
+			setPreview("drawing")
+			const m = await import("../3d/board-preview")
+			if (!on) return
+			abandon = () => m.abandonBoardPreview(ref, previewSha, prjPath)
+			const drawn = await m.drawBoardPreview(gh, ref, previewSha, prjPath)
+			if (on) setPreview(drawn)
+		})().catch(e => {
+			if (on && !(e instanceof Error && e.name === "PreviewAbandoned")) setPreview({ error: e instanceof Error ? e.message : String(e) })
+		})
+		return () => {
+			on = false
+			abandon()
+		}
+	}, [previewSha])
+
+	useEffect(() => {
+		if (!revealed && ((loaded && preview !== "loading") || (!busy && !loaded))) setRevealed(true)
+	}, [loaded, preview, busy, revealed])
 
 	const more = async () => {
 		if (!loaded) return
@@ -117,7 +169,11 @@ function Details(props: { gh: GitHub } & ProjectRef) {
 				</div>
 			</header>
 			{error && <div className="banner error">{error}</div>}
-			{commits[0] && <Preview gh={gh} owner={owner} repo={repo} sha={commits[0].sha} prjPath={prjPath} />}
+			{!revealed ? (
+				<Placeholder />
+			) : (
+			<div className="details-body">
+			{preview !== null && <Preview preview={preview} prjPath={prjPath} />}
 			<div className="section-heading">HISTORY</div>
 			<div className="commit-table" role="list" aria-label="Commits">
 				<div className="commit-row head" aria-hidden>
@@ -165,6 +221,8 @@ function Details(props: { gh: GitHub } & ProjectRef) {
 				<button className="btn load-more" onClick={more}>
 					Load more
 				</button>
+			)}
+			</div>
 			)}
 		</section>
 	)
@@ -248,40 +306,52 @@ function ChangedFiles({ title, files, strip, collapsed }: { title: string; files
 	)
 }
 
+type PreviewState = BoardPreview | null | "loading" | "drawing" | { error: string }
+
+const REVEAL_MS = 1200 // the longest the page waits to show everything at once
+
+// What the page shows until its history and picture are in: the same shapes, empty.
+function Placeholder() {
+	return (
+		<div className="details-placeholder" aria-busy="true" aria-label="Loading">
+			<div className="board-card">
+				<div className="board-card-image skeleton" style={{ width: 200, height: 170 }} />
+				<div className="board-card-facts">
+					<div className="skeleton" style={{ width: 190, height: 28 }} />
+					<div className="skeleton" style={{ width: 230, height: 24 }} />
+					<div className="skeleton" style={{ width: 260, height: 40 }} />
+				</div>
+			</div>
+			<div className="section-heading">HISTORY</div>
+			<div className="commit-table">
+				{[0, 1, 2, 3].map(i => (
+					<div key={i} className="commit-row skeleton-row">
+						<span className="skeleton" />
+						<span className="skeleton" />
+						<span className="skeleton" />
+						<span className="skeleton" />
+					</div>
+				))}
+			</div>
+		</div>
+	)
+}
+
 // The board as of the newest commit touching the project, a thumbnail of its top: the one the site
 // publishes, else drawn here in the browser (the whole project is loaded to draw it).
-function Preview({ gh, owner, repo, sha, prjPath }: { gh: GitHub; owner: string; repo: string; sha: string; prjPath: string }) {
-	const [preview, setPreview] = useState<BoardPreview | null | "loading" | { error: string }>("loading")
-	useEffect(() => {
-		let live = true
-		let abandon = () => {}
-		setPreview("loading")
-		import("../3d/board-preview")
-			.then(m => {
-				abandon = () => m.abandonBoardPreview({ owner, repo }, sha, prjPath)
-				return m.boardPreview(gh, { owner, repo }, sha, prjPath)
-			})
-			.then(
-				p => live && setPreview(p),
-				e => live && !(e instanceof Error && e.name === "PreviewAbandoned") && setPreview({ error: e instanceof Error ? e.message : String(e) }),
-			)
-		return () => {
-			live = false
-			abandon()
-		}
-	}, [sha, prjPath])
-	if (preview === null) return null // no board in the project
-	const ready = preview !== "loading" && !("error" in preview) ? preview : null
+function Preview({ preview, prjPath }: { preview: Exclude<PreviewState, null>; prjPath: string }) {
+	const ready = typeof preview === "object" && !("error" in preview) ? preview : null
+	const waiting = preview === "loading" || preview === "drawing"
 	return (
 		<div className="board-card">
 			<div className={`board-card-image ${ready?.backdrop ?? "light"}`}>
-				{preview === "loading" ? <Spinner /> : ready ? <img src={ready.image} alt={`${stripExt(prjPath)} board, top`} /> : <span>No preview</span>}
+				{waiting ? <Spinner /> : ready ? <img src={ready.image} alt={`${stripExt(prjPath)} board, top`} /> : <span>No preview</span>}
 			</div>
 			<div className="board-card-facts">
 				{ready ? (
 					<BoardFacts stats={ready.stats} mask={ready.mask} />
 				) : (
-					<div className="dim">{preview === "loading" ? "Rendering the board…" : "error" in preview ? preview.error : ""}</div>
+					<div className="dim">{waiting ? "Rendering the board…" : typeof preview === "object" && "error" in preview ? preview.error : ""}</div>
 				)}
 			</div>
 		</div>

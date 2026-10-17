@@ -398,6 +398,17 @@ button.commit-row:hover { background: var(--bg-raised); }
 .commit-msg { color: var(--text); }
 .details-status { display: flex; align-items: center; gap: 8px; padding: 14px 2px; }
 .load-more { justify-self: center; margin-top: 12px; }
+/* The project page appears in one go: placeholder shapes, then everything fading in together. */
+.details-body { display: contents; }
+.details-body > * { animation: details-in 0.18s ease-out; }
+@keyframes details-in { from { opacity: 0; } }
+.skeleton { display: block; border-radius: 6px; background: linear-gradient(90deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 60%, var(--text-dim)) 50%, var(--bg-raised) 100%); background-size: 200% 100%; animation: skeleton 1.2s ease-in-out infinite; }
+@keyframes skeleton { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.board-card-image.skeleton { padding: 0; }
+.skeleton-row { cursor: default; }
+.skeleton-row .skeleton { height: 12px; }
+.skeleton-row .skeleton:first-child { width: 60%; }
+@media (prefers-reduced-motion: reduce) { .skeleton, .details-body > * { animation: none; } }
 .board-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 28px; align-items: center; margin: 16px 0 12px; }
 .board-card-image { display: grid; place-items: center; min-width: 120px; min-height: 120px; padding: 8px; border-radius: 10px; }
 .board-card-image.light { background: #e4e6e9; color: #555; }

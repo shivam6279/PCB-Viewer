@@ -4,7 +4,8 @@
 // <built site>: the site after `npm run build` and tools/build-index.mjs (the index is what lists the
 // projects and their commits; no GitHub API). <store>: the folder kept on the repo's previews branch,
 // laid out as the site serves it (previews/<owner>/<repo>/<commit>/<project path>.json). Only pictures
-// the store lacks are drawn; every one in the store is then copied into the site.
+// the store lacks are drawn; every one in the store is then copied into the site, with a list per repo
+// (previews/<owner>/<repo>/index.json) of which commit each project's picture is at.
 // Env: RENDER_BUDGET_MIN (default 25): no new picture is started after this long, the rest wait for
 // the next deploy. RENDER_LIMIT: draw at most this many (a local try-out). RENDER_CHANNEL: a browser
 // to use instead of Playwright's own Chromium ("chrome": the installed one).
@@ -50,9 +51,10 @@ const fresh = async () => {
 }
 
 let drawn = 0, failed = 0
+let jobs = []
 try {
 	await fresh()
-	const jobs = await page.evaluate(() => window.__previewPlan())
+	jobs = await page.evaluate(() => window.__previewPlan())
 	const todo = jobs.filter(j => !existsSync(join(store, j.path)))
 	console.log(`${jobs.length} projects, ${jobs.length - todo.length} pictures stored, ${todo.length} to draw`)
 	for (const job of todo) {
@@ -82,4 +84,17 @@ try {
 }
 
 if (existsSync(join(store, "previews"))) cpSync(join(store, "previews"), join(site, "previews"), { recursive: true })
+// Each repo's list (src/app/stored-preview.ts PreviewManifest): per project, the commit its picture is
+// at and the folders its history covers, as of the branch head now. The project page reads it to ask
+// for its picture straight away and to skip reading the project file.
+const manifests = new Map()
+for (const j of jobs) {
+	const key = `${j.owner}/${j.repo}`
+	if (!manifests.has(key)) manifests.set(key, { owner: j.owner, repo: j.repo, branch: j.branch, head: j.head, projects: {} })
+	manifests.get(key).projects[j.prjPath] = { sha: j.sha, folders: j.folders }
+}
+for (const { owner, repo, ...m } of manifests.values()) {
+	mkdirSync(join(site, "previews", owner, repo), { recursive: true })
+	writeFileSync(join(site, "previews", owner, repo, "index.json"), JSON.stringify(m))
+}
 console.log(`drew ${drawn}, failed ${failed}`)

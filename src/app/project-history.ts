@@ -23,10 +23,11 @@ export async function historyFolders(gh: GitHub, ref: RepoRef, sha: string, prjP
 }
 
 // The newest commit on a branch that touches the project (its own folder or one it borrows from): the
-// commit its board picture is made at, so a push elsewhere in the repo doesn't call for a new one.
-export async function latestProjectCommit(gh: GitHub, ref: RepoRef, branch: string, prjPath: string): Promise<string | null> {
+// commit its board picture is made at, so a push elsewhere in the repo doesn't call for a new one. With
+// the folders that history covers and the branch head they were read at.
+export async function latestProjectCommit(gh: GitHub, ref: RepoRef, branch: string, prjPath: string): Promise<{ sha: string; folders: string[]; head: string } | null> {
 	const head = await gh.head(ref, branch)
 	const folders = await historyFolders(gh, ref, head.sha, prjPath)
 	const [first] = await ProjectHistory.forRepo(gh, ref, branch, folders).loadMore()
-	return first?.sha ?? null
+	return first ? { sha: first.sha, folders, head: head.sha } : null
 }

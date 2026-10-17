@@ -1,10 +1,11 @@
-// The home screen's thumbnail of a project's board. The deploy publishes one per project (made by
-// tools/render-previews.mjs through renderForStore, kept on the repo's previews branch); without one
-// it is drawn here. Drawing: the commit loaded the way the viewer loads it (the same parse, board
-// geometry and part models), drawn once by the 3D view's engine on a canvas kept off screen, straight
-// down on the top (orthographic: a plan, no perspective), cropped to what was drawn on a see-through
-// background. Its facts (size, layers, parts) come from the same load. Kept per commit for the session.
+// The home screen's thumbnail of a project's board, drawn here when the deploy has published none (see
+// src/app/stored-preview.ts; the deploy itself draws through renderForStore). Drawing: the commit loaded
+// the way the viewer loads it (the same parse, board geometry and part models), drawn once by the 3D
+// view's engine on a canvas kept off screen, straight down on the top (orthographic: a plan, no
+// perspective), cropped to what was drawn on a see-through background. Its facts (size, layers, parts)
+// come from the same load. Kept per commit for the session.
 import { buildData } from "../app/load-project-data"
+import type { BoardPreview, StoredPreview } from "../app/stored-preview"
 import { GitCommitSource } from "../github/commit-source"
 import type { GitHub } from "../github/github"
 import { loadProject } from "../model/load-project"
@@ -17,23 +18,6 @@ import { BoardEngine, FOV } from "./engine"
 import { MM } from "./frame"
 import { load3d } from "./prefetch"
 import { buildSolder } from "./solder"
-
-export interface BoardStats {
-	width: number // mm, the outline's box
-	height: number
-	thickness: number // mm
-	copperLayers: number
-	components: { top: number; bottom: number }
-	nets: number
-	vias: number
-}
-
-export interface BoardPreview {
-	image: string // URL of the picture, the outline's aspect
-	backdrop: "light" | "dark" // what the picture shows up against: the opposite of the top mask
-	mask: string // the top mask's colour, CSS
-	stats: BoardStats
-}
 
 const DRAW_PX = 640 // CSS px of the drawing's longer side, before it is cropped
 const ROOM = 1.3 // the drawing's view: the board's box and this much more, so nothing is cut off
@@ -49,41 +33,18 @@ export class PreviewAbandoned extends Error {
 	override name = "PreviewAbandoned"
 }
 
-export function boardPreview(gh: GitHub, ref: { owner: string; repo: string }, sha: string, prjPath: string): Promise<BoardPreview | null> {
+export function drawBoardPreview(gh: GitHub, ref: { owner: string; repo: string }, sha: string, prjPath: string): Promise<BoardPreview | null> {
 	const key = `${ref.owner}/${ref.repo}@${sha}:${prjPath}`
 	wanted = key
 	let p = made.get(key)
 	if (!p) {
-		const check = () => {
+		p = render(gh, ref, sha, prjPath, () => {
 			if (wanted !== key) throw new PreviewAbandoned()
-		}
-		p = storedPreview(ref, sha, prjPath).then(stored => (stored !== undefined ? stored : (check(), render(gh, ref, sha, prjPath, check))))
+		})
 		p.catch(() => made.delete(key))
 		made.set(key, p)
 	}
 	return p
-}
-
-// Where the deploy keeps a project's picture, under the site: previews/<owner>/<repo>/<commit>/<the
-// project file's path>.json. tools/render-previews.mjs writes the same paths.
-export function storedPreviewPath(ref: { owner: string; repo: string }, sha: string, prjPath: string): string {
-	return ["previews", ref.owner, ref.repo, sha, ...`${prjPath}.json`.split("/")].map(encodeURIComponent).join("/")
-}
-
-// What the deploy stored: the picture and its facts, or `none` for a project without a board.
-export type StoredPreview = (Omit<BoardPreview, "image"> & { image: string }) | { none: true }
-
-// The published picture: null for a project with no board, undefined when there is none (a commit newer
-// than the last deploy, or the dev server).
-async function storedPreview(ref: { owner: string; repo: string }, sha: string, prjPath: string): Promise<BoardPreview | null | undefined> {
-	try {
-		const res = await fetch(new URL(storedPreviewPath(ref, sha, prjPath), document.baseURI))
-		if (!res.ok || !res.headers.get("content-type")?.includes("json")) return undefined
-		const stored = (await res.json()) as StoredPreview
-		return "none" in stored ? null : stored
-	} catch {
-		return undefined
-	}
 }
 
 // The picture drawn for the deploy to store (the image inline, as a data URL).
@@ -208,7 +169,7 @@ async function cropToDrawn(canvas: HTMLCanvasElement): Promise<string> {
 	return blob ? URL.createObjectURL(blob) : out.toDataURL("image/png")
 }
 
-function boardStats(scene: PcbScene, board: Board3d, width: number, height: number): BoardStats {
+function boardStats(scene: PcbScene, board: Board3d, width: number, height: number): BoardPreview["stats"] {
 	const nets = new Set<string>()
 	let vias = 0
 	for (const o of scene.objects) {

@@ -12,6 +12,7 @@ import { guarded, openRecent, openSource } from "./open"
 import { ProjectDetails } from "./ProjectDetails"
 import { isGitRecent, listRecents, recentKey, type Recent } from "./recents"
 import { Spinner } from "./Spinner"
+import { previewManifest } from "./stored-preview"
 import { FolderIcon, ProjectIcon } from "./tree-icons"
 import { useAppStore, type ViewerScreen } from "./store"
 import { useGitHubProjects } from "./use-github-projects"
@@ -42,6 +43,11 @@ export function Home() {
 	useEffect(() => {
 		listRecents().then(setRecents, () => setRecents([]))
 	}, [])
+
+	// The published board-picture lists, fetched now so a project page finds its picture at once.
+	useEffect(() => {
+		for (const repo of REPOS) void previewManifest({ owner: session.owner, repo })
+	}, [session.owner])
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
