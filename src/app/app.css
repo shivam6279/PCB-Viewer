@@ -18,6 +18,12 @@ button { font: inherit; color: inherit; }
 }
 
 .viewer { display: grid; height: 100%; grid-template-rows: var(--topbar-height) 1fr; grid-template-columns: var(--sidebar-width) 1fr; }
+/* The project tree folded away (kept, so its open folders stay open): a slim strip in its place
+   holds the button that brings it back. */
+.viewer.sidebar-collapsed { grid-template-columns: 34px 1fr; }
+.viewer.sidebar-collapsed > .sidebar { display: none; }
+.sidebar-rail { display: flex; justify-content: center; padding-top: 12px; border-right: 1px solid var(--border); }
+.sidebar-heading.with-action { display: flex; align-items: center; justify-content: space-between; padding: 12px 8px 4px 16px; }
 .topbar { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .topbar-back { background: none; border: 0; cursor: pointer; padding: 4px; }
 .topbar-title { line-height: 1.35; }
@@ -36,6 +42,7 @@ button { font: inherit; color: inherit; }
 .tree-icon { width: 14px; height: 11px; border-radius: 2px; flex: none; }
 .tree-icon.sch, .tree-icon.folder { background: var(--doc-folder); }
 .tree-icon.pcb, .tree-icon.variant { background: var(--doc-pcb); }
+.tree-icon-img { flex: none; display: block; }
 .tree-row.checked .tree-label { font-weight: 600; }
 .tree-check { margin-left: auto; flex: none; color: var(--text); }
 .tree-icon.other { background: var(--text-disabled); }
@@ -296,9 +303,11 @@ button { font: inherit; color: inherit; }
 
 /* Home: top bar, project tree, main panel */
 .home { display: grid; height: 100%; grid-template-rows: var(--topbar-height) 1fr; grid-template-columns: var(--sidebar-width) 1fr; }
-.home-topbar { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 460px) minmax(max-content, 1fr); align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.home-topbar { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(140px, 1fr) minmax(120px, 460px) minmax(max-content, 1fr); align-items: center; gap: 16px; padding: 0 16px; border-bottom: 1px solid var(--border); }
 .home-brand { display: flex; align-items: center; gap: 12px; line-height: 1.35; min-width: 0; }
 .home-brand-name { font-weight: 600; }
+.home-brand-text { min-width: 0; }
+.home-brand-text > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-logo { width: 30px; height: 30px; border-radius: 6px; flex: none; background: linear-gradient(135deg, var(--doc-pcb) 0 50%, var(--accent) 50% 100%); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12); }
 .home-search input, .search-palette input { flex: 1; min-width: 0; background: none; border: 0; color: var(--text); font: inherit; outline: none; }
 .home-search input::placeholder, .search-palette input::placeholder { color: var(--text-dim); }
@@ -313,6 +322,12 @@ button { font: inherit; color: inherit; }
 .account { display: flex; align-items: center; gap: 8px; margin-left: 8px; padding-left: 12px; border-left: 1px solid var(--border); }
 .avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); font-weight: 600; font-size: 12px; }
 .account-name { white-space: nowrap; }
+/* Narrow (but not yet stacked, see max-width: 900px) window: the top-bar buttons drop to icons and the search loses its shortcut hint, so the
+   search box keeps usable room instead of running over the brand or the buttons. */
+@media (min-width: 901px) and (max-width: 960px) {
+	.home-actions .btn-label, .home-actions .account-name, .home-search .kbd { display: none; }
+	.home-actions .btn.ghost { padding: 8px; }
+}
 
 .home-sidebar { padding-bottom: 16px; }
 .section-heading { padding: 18px 16px 8px; color: var(--text-dim); font-size: var(--font-size-small); letter-spacing: 0.08em; }
@@ -322,7 +337,8 @@ button { font: inherit; color: inherit; }
 .tree-meta { margin-left: auto; padding-left: 8px; font-size: var(--font-size-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .tree-icon.repo { background: var(--accent); }
 
-.home-main { min-width: 0; overflow: auto; background: var(--bg-input); }
+/* Its scrollbar's gutter always kept: the page growing past the fold (a commit opened up) does not narrow it. */
+.home-main { min-width: 0; overflow: auto; scrollbar-gutter: stable; background: var(--bg-input); }
 .home.dragging .home-main { box-shadow: inset 0 0 0 2px var(--accent); }
 .banner { display: flex; align-items: center; gap: 8px; margin: 16px 24px 0; padding: 10px 14px; border-radius: 6px; background: var(--bg-chrome); border: 1px solid var(--border); }
 .welcome { max-width: 720px; margin: 0 auto; padding: 48px 24px; display: grid; gap: 20px; }
@@ -359,10 +375,49 @@ button { font: inherit; color: inherit; }
 .commit-row.head { border-top: 0; cursor: default; color: var(--text-dim); font-size: var(--font-size-small); letter-spacing: 0.06em; text-transform: uppercase; padding: 8px 14px; }
 button.commit-row:hover { background: var(--bg-raised); }
 .commit-row.opening { background: var(--bg-selected); }
+.commit-row.expanded { background: var(--bg-raised); }
+.commit-details { padding: 14px 18px 16px; border-top: 1px solid var(--border); background: var(--bg-raised); display: grid; gap: 10px; }
+.commit-details > .dim { display: flex; align-items: center; gap: 8px; }
+.commit-details-head { display: flex; align-items: flex-start; gap: 16px; }
+.commit-details-message { flex: 1; min-width: 0; }
+.commit-details-message .subject { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.commit-details-message .body { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); line-height: 1.5; }
+.commit-details-meta { font-size: var(--font-size-small); overflow-wrap: anywhere; }
+.commit-details-meta code { font-size: inherit; }
+.commit-files-title { display: inline-flex; align-items: center; gap: 4px; padding: 2px 0; background: none; border: 0; cursor: pointer; color: var(--text-dim); font-size: var(--font-size-small); letter-spacing: 0.06em; text-transform: uppercase; }
+.commit-files-title .chevron { transition: transform 0.15s; }
+.commit-files-title[aria-expanded="true"] .chevron { transform: rotate(90deg); }
+.commit-files ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
+.commit-files li { display: flex; align-items: baseline; gap: 10px; padding: 2px 0; }
+.file-status { flex: none; width: 16px; text-align: center; font-size: 11px; font-weight: 700; }
+.file-status.added { color: var(--diff-added); }
+.file-status.modified, .file-status.renamed { color: var(--diff-modified); }
+.file-status.removed { color: var(--diff-removed); }
+.file-path { min-width: 0; overflow-wrap: anywhere; }
 .commit-row > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .commit-msg { color: var(--text); }
 .details-status { display: flex; align-items: center; gap: 8px; padding: 14px 2px; }
 .load-more { justify-self: center; margin-top: 12px; }
+.board-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 28px; align-items: center; margin: 16px 0 12px; }
+.board-card-image { display: grid; place-items: center; min-width: 120px; min-height: 120px; padding: 8px; border-radius: 10px; }
+.board-card-image.light { background: #e4e6e9; color: #555; }
+.board-card-image.dark { background: #2c2e32; color: #aaa; }
+/* The box takes the picture's shape: its height fixed, its width following, so the margin round the board
+   is the padding alone (a very wide board is capped and letterboxed). */
+.board-card-image img { display: block; height: 154px; width: auto; max-width: 300px; object-fit: contain; filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3)); }
+.board-card-facts { display: grid; gap: 14px; align-content: center; min-width: 0; }
+.board-size { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.board-size .times { color: var(--text-dim); font-weight: 400; margin: 0 2px; }
+.board-size .unit { margin-left: 6px; font-size: 14px; font-weight: 400; color: var(--text-dim); }
+.board-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.board-tags .tag { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--text); font-size: var(--font-size-small); }
+.board-tags .swatch { width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25); }
+.board-counts { display: flex; gap: 32px; }
+.board-counts .count { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.board-counts .label { color: var(--text-dim); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+@media (max-width: 640px) {
+	.board-card { grid-template-columns: 1fr; gap: 16px; }
+}
 @media (max-width: 900px) {
 	.home { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr; }
 	.home-topbar { grid-template-columns: 1fr; padding: 10px 16px; }

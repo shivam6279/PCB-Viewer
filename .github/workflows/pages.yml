@@ -10,7 +10,7 @@ on:
     - cron: "17 */2 * * *" # fallback refresh of the index every 2 hours
 
 permissions:
-  contents: read
+  contents: write # the previews branch (board pictures) is pushed to
   pages: write
   id-token: write
 
@@ -33,6 +33,21 @@ jobs:
       # branch and file list of the repo, from a clone without file contents (no API requests).
       # Keep in step with src/github/config.ts.
       - run: node tools/build-index.mjs dist/index shivam6279/PCB=https://github.com/shivam6279/PCB.git
+      # Board pictures for the home screen, kept on the previews branch (one per project and commit):
+      # the ones missing are drawn with the site's own 3D code, then all are published with the site.
+      - name: Check out the stored board pictures
+        run: |
+          if git fetch --depth 1 origin previews; then git worktree add -B previews .previews FETCH_HEAD
+          else git worktree add --orphan -b previews .previews; fi
+      - run: npx playwright install --with-deps chromium
+      - run: node tools/render-previews.mjs dist .previews
+      - name: Store new board pictures
+        working-directory: .previews
+        run: |
+          git add -A
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Board pictures"
+          git push origin previews
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

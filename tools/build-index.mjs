@@ -4,7 +4,8 @@
 //   node tools/build-index.mjs <out-dir> <owner/repo>=<clone url or local path> [...]
 // Writes, per repo, under <out-dir>/<owner>/<repo>/:
 //   meta.json          { owner, repo, defaultBranch, branches: { name: headSha }, generatedAt }
-//   commits.json       [{ sha, parents, author, date, message, paths }]  every commit on any branch
+//   commits.json       [{ sha, parents, author, date, message, body?, paths }]  every commit on any branch
+//                      (message: the subject line; body: the rest of the message, when there is any)
 //   trees/<sha>.json   [[path, blobSha], ...]                            the files at each commit
 // and <out-dir>/repos.json listing the repos. File contents are not included: the site downloads them
 // from GitHub's raw-file CDN.
@@ -62,6 +63,13 @@ for (const spec of specs) {
 		commits.push({ sha: s, parents: parents ? parents.split(" ") : [], author, date, message, paths: rest.map(x => x.trim()).filter(Boolean) })
 	}
 	commits.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+	// The messages' bodies, a log of their own: a body's lines would read as changed paths above.
+	for (const rec of git("log", "--branches", `--format=${REC}%H${SEP}%b`).split(REC).slice(1)) {
+		const [sha, body] = rec.split(SEP)
+		const text = (body ?? "").trim()
+		const c = text && commits.find(x => x.sha === sha)
+		if (c) c.body = text
+	}
 
 	const dir = join(outDir, owner, repo)
 	mkdirSync(join(dir, "trees"), { recursive: true })

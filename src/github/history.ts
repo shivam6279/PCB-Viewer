@@ -38,7 +38,7 @@ export class ProjectHistory {
 	private readonly seen = new Set<string>()
 
 	constructor(
-		folders: string[],
+		readonly folders: string[],
 		private readonly fetchPage: FetchCommits,
 	) {
 		this.streams = folders.map(path => ({ path, next: undefined, done: false, buffer: [] }))

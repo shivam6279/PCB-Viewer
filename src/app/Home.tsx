@@ -12,6 +12,7 @@ import { guarded, openRecent, openSource } from "./open"
 import { ProjectDetails } from "./ProjectDetails"
 import { isGitRecent, listRecents, recentKey, type Recent } from "./recents"
 import { Spinner } from "./Spinner"
+import { FolderIcon, ProjectIcon } from "./tree-icons"
 import { useAppStore, type ViewerScreen } from "./store"
 import { useGitHubProjects } from "./use-github-projects"
 
@@ -84,7 +85,7 @@ export function Home() {
 			<header className="home-topbar">
 				<div className="home-brand">
 					<span className="home-logo" aria-hidden />
-					<div>
+					<div className="home-brand-text">
 						<div className="home-brand-name">PCB-Viewer</div>
 						<div className="dim">GitHub · {REPOS.map(r => `${session.owner}/${r}`).join(", ")}</div>
 					</div>
@@ -101,19 +102,19 @@ export function Home() {
 						</button>
 					)}
 					{canPickFolder && (
-						<button className="btn ghost" onClick={pickFolder}>
-							<FolderOpen size={15} /> Open folder…
+						<button className="btn ghost" aria-label="Open folder…" onClick={pickFolder}>
+							<FolderOpen size={15} /> <span className="btn-label">Open folder…</span>
 						</button>
 					)}
-					<button className="btn ghost" onClick={() => zipInput.current?.click()}>
-						<FileArchive size={15} /> Open .zip…
+					<button className="btn ghost" aria-label="Open .zip…" onClick={() => zipInput.current?.click()}>
+						<FileArchive size={15} /> <span className="btn-label">Open .zip…</span>
 					</button>
 					<input ref={zipInput} data-testid="zip-input" type="file" accept=".zip" hidden onChange={e => openZip(e.target.files?.[0])} />
 					{signedIn ? (
 						<Account login={signedIn.login} />
 					) : (
 						<button className="btn ghost" aria-pressed={showSignIn} onClick={() => setShowSignIn(!showSignIn)}>
-							<LogIn size={15} /> Sign in
+							<LogIn size={15} /> <span className="btn-label">Sign in</span>
 						</button>
 					)}
 				</div>
@@ -204,7 +205,7 @@ function OpenProject({ parked }: { parked: ViewerScreen }) {
 			<div className="section-heading">OPEN</div>
 			<div className="tree-row active" style={{ paddingLeft: 8 }} role="button" aria-label={`Return to ${parked.project.name}`} onClick={() => returnTo(parked)}>
 				<span className="tree-chevron" />
-				<span className="tree-icon pcb" />
+				<ProjectIcon />
 				<span className="tree-label">{parked.project.name}</span>
 				<span className="tree-meta dim">{src instanceof GitCommitSource ? `${src.ref.repo} @ ${src.sha.slice(0, 7)}` : src.name}</span>
 			</div>
@@ -246,7 +247,7 @@ function RecentList({ recents, selectedKey }: { recents: Recent[]; selectedKey: 
 						onDoubleClick={() => (isGitRecent(r) ? navigate({ kind: "ghCommit", ...r.github }) : openRecent(r))}
 					>
 						<span className="tree-chevron" />
-						<span className="tree-icon pcb" />
+						<ProjectIcon />
 						<span className="tree-label">{r.name}</span>
 						<span className="tree-meta dim">{isGitRecent(r) ? `${r.github.repo} @ ${r.github.sha.slice(0, 7)}` : r.handle.name}</span>
 					</div>
@@ -307,7 +308,7 @@ function ProjectTreeView({ projects, query, selectedKey }: { projects: Parameter
 						onDoubleClick={() => void openLatest(p)}
 					>
 						<span className="tree-chevron" />
-						<span className="tree-icon pcb" />
+						<ProjectIcon />
 						<span className="tree-label">{n.label}</span>
 						{n.label.toLowerCase() !== p.name.toLowerCase() && <span className="tree-meta dim">{p.name}</span>}
 					</div>,
@@ -317,7 +318,7 @@ function ProjectTreeView({ projects, query, selectedKey }: { projects: Parameter
 			return [
 				<div key={n.key} className="tree-row" style={pad} role="treeitem" aria-expanded={open} onClick={() => toggle(n.key)}>
 					<span className="tree-chevron">{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
-					<span className={`tree-icon ${repoKeys.has(n.key) ? "repo" : "folder"}`} />
+					<FolderIcon open={open} />
 					<span className="tree-label">{n.label}</span>
 				</div>,
 				...(open ? rows(n.children, depth + 1) : []),

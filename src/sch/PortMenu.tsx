@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import type { MenuNode } from "./interaction"
+import { DocIcon } from "../app/tree-icons"
 
 // The port / sheet entry popup: the sheet instances the net reaches, as a tree, at the cursor.
 // It lives on the page body (fixed, over the inspector): each tab's view is its own compositor layer,
@@ -84,7 +85,7 @@ export function PortMenu({ x, y, area, items, onPick, onClose }: {
 					) : (
 						<span className="port-menu-chevron" />
 					)}
-					<span className="tree-icon sch" />
+					<DocIcon kind="sch" />
 					<span className="port-menu-label">{n.label}</span>
 				</div>,
 				...(expanded ? rows(n.children, depth + 1) : []),

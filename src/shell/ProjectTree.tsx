@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from "react"
-import { Check, ChevronDown, ChevronRight, TriangleAlert } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, PanelLeftClose, TriangleAlert } from "lucide-react"
 import type { HierarchyNode } from "../model/hierarchy"
 import type { DocEntry, ProjectSummary } from "../model/load-project"
 import type { FileChange } from "../diff/diff"
+import { DocIcon, FolderIcon, otherDocKind, type DocKind } from "../app/tree-icons"
 
 // The row that shows the design without any variant's changes.
 export const NO_VARIATIONS = "[No Variations]"
@@ -25,9 +26,11 @@ export interface ProjectTreeProps {
 	// The assembly variant shown (null = "[No Variations]"); the Variants folder lists the project's.
 	activeVariant?: string | null
 	onSelectVariant?(variant: string | null): void
+	// Folds the panel away (its header button); without it there is no button.
+	onCollapse?(): void
 }
 
-export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectSheet, onSelectPcb, nets, activeNetId, onSelectNet, changes, activeVariant = null, onSelectVariant }: ProjectTreeProps) {
+export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectSheet, onSelectPcb, nets, activeNetId, onSelectNet, changes, activeVariant = null, onSelectVariant, onCollapse }: ProjectTreeProps) {
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set(["nets"]))
 	const toggle = (id: string) =>
 		setCollapsed(prev => {
@@ -71,7 +74,7 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 				) : (
 					<span className="tree-chevron" />
 				)}
-				<span className={`tree-icon ${icon}`} />
+				{icon === "folder" ? <FolderIcon open={open} /> : icon === "net" ? <span className="tree-icon net" /> : <DocIcon kind={icon as DocKind} />}
 				<span className="tree-label">{label}</span>
 				{change && (
 					<span className={`tree-change ${change}`} aria-label={CHANGE_WORD[change]}>
@@ -112,7 +115,14 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 
 	return (
 		<nav className="sidebar" aria-label="Project">
-			<div className="sidebar-heading">PROJECT</div>
+			<div className="sidebar-heading with-action">
+				<span>PROJECT</span>
+				{onCollapse && (
+					<button className="icon-btn" aria-label="Hide project tree" onClick={onCollapse}>
+						<PanelLeftClose size={16} />
+					</button>
+				)}
+			</div>
 			{row("design", 0, "Design", "folder", { hasChildren: true })}
 			{!collapsed.has("design") && variants.length > 0 && row("variants", 1, "Variants", "folder", { hasChildren: true })}
 			{!collapsed.has("design") &&
@@ -134,7 +144,7 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 							docPath: d.path,
 						}),
 					)}
-					{others.map(d => row(`other:${d.path}`, 2, d.name, "other", { disabled: true }))}
+					{others.map(d => row(`other:${d.path}`, 2, d.name, otherDocKind(d.name), { disabled: true }))}
 				</>
 			)}
 			{!collapsed.has("design") && nets && nets.length > 0 && row("nets", 1, "Nets", "folder", { hasChildren: true })}

@@ -13,6 +13,7 @@ import { usePcbScene } from "../pcb/use-scene"
 import { instanceLabel } from "../sch/interaction"
 import { footprintSvg } from "../pcb/footprint-svg"
 import { formatMm, isCircle, measured, MEASURE_MODES, MODE_LABELS, MODE_PREFIX, radiusOf, SNAP_LABELS, type MeasurePoint } from "../measure/measure"
+import { DocIcon } from "../app/tree-icons"
 
 const MM = 0.0254
 
@@ -167,7 +168,7 @@ function NetPanel({ tab, project, compiled, activeSheetId, pcb, net, selection, 
 			<Section title="Connectivity">
 				{nodes.map(n => (
 					<div key={n.id} className={`inspector-row link${current(n) ? " current" : ""}`} onClick={() => jump(n)}>
-						<span className="tree-icon sch" />
+						<DocIcon kind="sch" />
 						<span className="grow">{instanceLabel(n)}</span>
 						{current(n) && <Check size={14} className="tick" />}
 					</div>
@@ -203,7 +204,7 @@ function BundlePanel({ tab, project, compiled, activeSheetId, bundle, selection,
 			<Section title="Connectivity">
 				{nodes.map(n => (
 					<div key={n.id} className={`inspector-row link${current(n) ? " current" : ""}`} onClick={() => jump(n)}>
-						<span className="tree-icon sch" />
+						<DocIcon kind="sch" />
 						<span className="grow">{instanceLabel(n)}</span>
 						{current(n) && <Check size={14} className="tick" />}
 					</div>

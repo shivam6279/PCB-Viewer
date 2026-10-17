@@ -16,6 +16,8 @@ import { DiffArea } from "../shell/DiffArea"
 import type { CompareMode, Selection } from "./store"
 import { SearchPalette } from "../shell/SearchPalette"
 import { buildSearchIndex, type SearchItem } from "../shell/search"
+import { useSidebarCollapsed } from "./sidebar-collapsed"
+import { PanelLeftOpen } from "lucide-react"
 
 export function Viewer() {
 	// While parked behind the home screen the viewer keeps rendering its own (hidden) state.
@@ -83,6 +85,20 @@ export function Viewer() {
 		[data],
 	)
 
+	// The project tree folded away: its own header button (the strip left in its place opens it again),
+	// or Ctrl+B / Cmd+B.
+	const [sidebarCollapsed, toggleSidebar] = useSidebarCollapsed()
+	useEffect(() => {
+		if (!viewing) return
+		const onKey = (e: KeyboardEvent) => {
+			if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "b") return
+			e.preventDefault()
+			toggleSidebar()
+		}
+		window.addEventListener("keydown", onKey)
+		return () => window.removeEventListener("keydown", onKey)
+	}, [viewing])
+
 	// Project search: the top-bar icon, or Ctrl+F / Cmd+F instead of the browser's find.
 	const [searching, setSearching] = useState(false)
 	const searchProject = onSecondary ? secondary.project : project
@@ -143,7 +159,7 @@ export function Viewer() {
 	) : null
 
 	return (
-		<div className="viewer">
+		<div className={`viewer${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
 			{screen.source instanceof GitCommitSource ? (
 				<TopBar
 					title={screen.project.name}
@@ -171,7 +187,15 @@ export function Viewer() {
 				changes={compare?.files ?? null}
 				activeVariant={variant}
 				onSelectVariant={useAppStore.getState().setVariant}
+				onCollapse={toggleSidebar}
 			/>
+			{sidebarCollapsed && (
+				<div className="sidebar-rail">
+					<button className="icon-btn" aria-label="Show project tree" onClick={toggleSidebar}>
+						<PanelLeftOpen size={16} />
+					</button>
+				</div>
+			)}
 			<main className="main">
 				<DocBar project={shown.project} tab={tab} activeSheetId={activeSheetId} onTab={setTab} onSelectSheet={selectSheet} right={modeBar} />
 				<div className="main-body">

@@ -145,13 +145,14 @@ export class BoardEngine {
 		readonly data: Board3d,
 		geometry: BoardGeometry,
 		private readonly events: EngineEvents,
+		options: { transparent?: boolean } = {}, // no background: a still picture laid over the page
 	) {
 		this.frame = boardFrame(scene, data)
-		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true })
+		this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: options.transparent ?? false })
 		this.renderer.setPixelRatio(window.devicePixelRatio)
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace
 		// Every board is drawn on the same flat grey, whatever the board's own 3D workspace colour.
-		this.world.background = new THREE.Color().setRGB(200 / 255, 200 / 255, 200 / 255, THREE.SRGBColorSpace)
+		if (!options.transparent) this.world.background = new THREE.Color().setRGB(200 / 255, 200 / 255, 200 / 255, THREE.SRGBColorSpace)
 		this.perspective = new THREE.PerspectiveCamera(FOV, 1, 1, 10000)
 		this.world.add(this.perspective, this.orthographic)
 

@@ -20,6 +20,19 @@ export interface CommitInfo {
 	date: string // ISO
 }
 
+// A commit opened up in the project's history: its whole message and what it changed.
+export interface CommitDetails extends CommitInfo {
+	body: string // the message past its first line ("" for none)
+	parents: string[]
+	files: ChangedFile[]
+}
+
+export interface ChangedFile {
+	path: string
+	status: "added" | "modified" | "removed" | "renamed"
+	previous?: string // renamed: the old path
+}
+
 export interface Tree {
 	files: Map<string, string> // path -> blob sha
 	truncated: boolean
@@ -39,6 +52,8 @@ interface RawCommit {
 	sha: string
 	commit: { message: string; author: { name: string; date: string } | null }
 	author: { login: string } | null
+	parents?: { sha: string }[]
+	files?: { filename: string; status: string; previous_filename?: string }[]
 }
 
 const toCommit = (c: RawCommit): CommitInfo => ({
@@ -115,6 +130,34 @@ export class GitHub {
 		const c = toCommit(await this.client.json<RawCommit>(`${repoPath(r)}/commits/${enc(sha)}`))
 		await this.cache.putJson(key, c)
 		return c
+	}
+
+	// A commit's whole message and changed files. From the site's index when it has the commit (its file
+	// statuses from the commit's and its parent's file lists), else one API request. Kept by sha.
+	async commitDetails(r: RepoRef, sha: string): Promise<CommitDetails> {
+		const key = `commitDetails:${r.owner}/${r.repo}:${sha}`
+		const hit = await this.cache.getJson<CommitDetails>(key)
+		if (hit) return hit
+		const indexed = (await this.index?.repo(r))?.bySha.get(sha)
+		let details: CommitDetails
+		if (indexed) {
+			const parent = indexed.parents[0]
+			const [mine, before] = await Promise.all([this.index!.tree(r, sha), parent ? this.index!.tree(r, parent) : new Map<string, string>()])
+			const status = (path: string): ChangedFile["status"] =>
+				!mine || !before ? "modified" : !mine.has(path) ? "removed" : !before.has(path) ? "added" : "modified"
+			details = { ...toCommitInfo(indexed), body: indexed.body ?? "", parents: indexed.parents, files: indexed.paths.map(path => ({ path, status: status(path) })) }
+		} else {
+			const raw = await this.client.json<RawCommit>(`${repoPath(r)}/commits/${enc(sha)}`)
+			const statusOf = (s: string): ChangedFile["status"] => (s === "added" || s === "removed" || s === "renamed" ? s : "modified")
+			details = {
+				...toCommit(raw),
+				body: raw.commit.message.split("\n").slice(1).join("\n").trim(),
+				parents: (raw.parents ?? []).map(p => p.sha),
+				files: (raw.files ?? []).map(f => ({ path: f.filename, status: statusOf(f.status), ...(f.previous_filename ? { previous: f.previous_filename } : {}) })),
+			}
+		}
+		await this.cache.putJson(key, details)
+		return details
 	}
 
 	// Commits touching a path, newest first. Pass the returned `next` back in to get the following page.

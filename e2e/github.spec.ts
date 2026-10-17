@@ -47,7 +47,7 @@ test("no sign-in: browse the public projects, open commits, switch, go back, dee
 	const list = page.getByRole("list", { name: "Commits" })
 	await expect(list.getByRole("listitem")).toHaveCount(cubliCommits().length)
 	await shot(page, "project")
-	await list.getByText(older.slice(0, 7)).click()
+	await list.getByText(older.slice(0, 7)).dblclick()
 
 	// Viewer at that commit.
 	await expect(page).toHaveURL(new RegExp(`#/gh/${OWNER}/${REPO}/${older}/`))
@@ -91,7 +91,7 @@ test("opening a commit shows progress where it was clicked", async ({ page }) =>
 
 	// Project page: the clicked row turns busy with a file count; the page stays.
 	gh.blobDelayMs = 1500
-	await list.getByText(older.slice(0, 7)).click()
+	await list.getByText(older.slice(0, 7)).dblclick()
 	const row = list.getByRole("listitem").filter({ has: page.getByRole("status") })
 	await expect(row).toHaveAttribute("aria-busy", "true")
 	await expect(row.getByRole("status")).toHaveText(/of \d+ files|Listing files/)
@@ -149,7 +149,7 @@ test("a first anonymous visit stays well inside GitHub's 60 requests an hour", a
 	await page.getByLabel("Search projects").fill("Main Board/STM32")
 	await tree.getByRole("treeitem", { name: /^STM32/ }).click()
 	await expect(page.getByRole("list", { name: "Commits" }).getByRole("listitem").first()).toBeVisible({ timeout: 30_000 })
-	await page.getByRole("list", { name: "Commits" }).getByRole("listitem").first().click()
+	await page.getByRole("list", { name: "Commits" }).getByRole("listitem").first().dblclick()
 	await expect(page.locator('.sch-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
 	await page.waitForTimeout(1500)
 	const api = gh.requests.filter(r => !r.startsWith("raw:"))
@@ -168,7 +168,10 @@ test("with the site's index, browsing makes no GitHub API requests at all", asyn
 	await tree.getByRole("treeitem", { name: /^STM32/ }).click()
 	const list = page.getByRole("list", { name: "Commits" })
 	await expect(list.getByRole("listitem")).toHaveCount(cubliCommits().length, { timeout: 30_000 })
+	// A click opens the commit up (its files from the index); Open in viewer opens it.
 	await list.getByRole("listitem").nth(1).click()
+	await expect(page.getByText(/Changed in this project/)).toBeVisible({ timeout: 30_000 })
+	await page.getByRole("button", { name: "Open in viewer" }).click()
 	await expect(page.locator('.sch-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
 	// Compare with the commit before: still nothing from the API.
 	await page.getByRole("button", { name: "Compare" }).click()

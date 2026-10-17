@@ -31,6 +31,9 @@ export interface Load3d {
 	progress: { done: number; total: number } // models converted so far
 }
 
+// The open project, the commit compared with it, and the home screen's board preview (board-preview.ts).
+export type Side = "primary" | "secondary" | "preview"
+
 const loads = new WeakMap<ProjectData, Load3d>()
 // One 3D worker per side: a newly opened project replaces the last one's; a compared commit (the
 // secondary) has its own, so loading it doesn't end the primary's (whose highlights still need it).
@@ -48,7 +51,7 @@ interface Board3dLoad {
 }
 const boards = new Map<string, { key: string; load: Board3dLoad }>() // per side
 
-export function startBoard3d(key: string, readBoard: () => Promise<Uint8Array>, side: "primary" | "secondary" = "primary"): Board3dLoad {
+export function startBoard3d(key: string, readBoard: () => Promise<Uint8Array>, side: Side = "primary"): Board3dLoad {
 	const known = boards.get(side)
 	if (known?.key === key) return known.load
 	workers.get(side)?.terminate()
@@ -79,7 +82,7 @@ export function startBoard3d(key: string, readBoard: () => Promise<Uint8Array>, 
 	return load
 }
 
-export function load3d(parser: Parser, data: ProjectData, boardKey: string, readBoard: () => Promise<Uint8Array>, side: "primary" | "secondary" = "primary"): Load3d {
+export function load3d(parser: Parser, data: ProjectData, boardKey: string, readBoard: () => Promise<Uint8Array>, side: Side = "primary"): Load3d {
 	let load = loads.get(data)
 	if (load) return load
 	const early = startBoard3d(boardKey, readBoard, side)

@@ -8,7 +8,8 @@ export interface IndexCommit {
 	parents: string[]
 	author: string
 	date: string
-	message: string
+	message: string // the subject line
+	body?: string // the rest of the message, if any
 	paths: string[] // changed against the first parent
 }
 

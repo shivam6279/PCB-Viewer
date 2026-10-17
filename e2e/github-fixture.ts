@@ -40,7 +40,13 @@ export async function fakeGitHub(page: Page, token = "github_pat_fixture"): Prom
 	await page.route("https://raw.githubusercontent.com/**", route => {
 		const parts = new URL(route.request().url()).pathname.split("/").slice(1).map(decodeURIComponent)
 		const [, , sha, ...path] = parts
-		state.requests.push(`raw:${path.join("/")}`)
+		// Logged by content (the blob), as the site caches it: the same file at two commits is one download,
+		// two versions of it are two.
+		let blob = "?"
+		try {
+			blob = gitText(["rev-parse", `${sha}:${path.join("/")}`]).trim().slice(0, 12)
+		} catch {}
+		state.requests.push(`raw:${path.join("/")}@${blob}`)
 		try {
 			return route.fulfill({ status: 200, headers: CORS, body: git(["show", `${sha}:${path.join("/")}`]) })
 		} catch {
