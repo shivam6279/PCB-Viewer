@@ -8,6 +8,8 @@ import { BomView } from "../bom/BomView"
 import type { ProjectSource } from "../source/types"
 import { useAppStore, type ViewTab } from "../app/store"
 import { whenIdle } from "../app/idle"
+import { stripExt } from "../source/paths"
+import { boardKey } from "../3d/board-key"
 import { usePane, usePaneData } from "../app/pane"
 
 // three.js and the STEP importer load in their own chunk (fetched in the background, see Viewer).
@@ -56,7 +58,7 @@ export function ViewArea({ source, parser, project, tab, activeSheetId, activePc
 				<div className={pane("3d")}>
 					{pcb ? (
 						<Suspense fallback={<div className="view-message">Loading board…</div>}>
-							<View3d parser={parser} active={tab === "3d"} readBoard={() => source.read(pcb.path)} variants={project.variants} />
+							<View3d parser={parser} active={tab === "3d"} board={boardKey(source, pcb.path)} readBoard={() => source.read(pcb.path)} variants={project.variants} name={stripExt(pcb.path)} />
 						</Suspense>
 					) : (
 						<div className="view-message">No board</div>

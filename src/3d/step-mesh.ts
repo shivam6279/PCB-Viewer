@@ -49,3 +49,12 @@ export async function stepMesh(bytes: Uint8Array): Promise<StepMesh | null> {
 	}
 	return pending
 }
+
+// An assembly the STEP export wrote, coloured as it was written (see the worker's convertAssembly).
+// Not cached: the export dialog's preview keeps its own. In a worker of its own, so the preview never
+// holds up the board's part models in the pool.
+let assemblyWorker: Remote<StepWorkerApi> | null = null
+export function stepAssemblyMesh(bytes: Uint8Array, layers: Record<string, number[]>, models: Uint8Array[]): Promise<StepMesh | null> {
+	assemblyWorker ??= wrap<StepWorkerApi>(new Worker(new URL("./step.worker.ts", import.meta.url), { type: "module" }))
+	return assemblyWorker.convertAssembly(bytes, layers, models)
+}

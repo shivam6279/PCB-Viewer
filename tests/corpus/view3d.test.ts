@@ -48,6 +48,26 @@ describe.skipIf(!hasCorpus)("3D board data", () => {
 		expect(slow).toEqual([])
 	})
 
+	// A track ending at a via's centre is drilled through with it: none of its copper, walls included,
+	// stands inside the hole.
+	test("Camera: no copper inside a drilled hole", () => {
+		const doc = parseAltiumFile(new Uint8Array(readFileSync(join(CORPUS, "PnP/Camera/Camera.PcbDoc")))).document as any
+		const scene = buildPcbScene(doc)
+		const g = buildBoardGeometry(scene, extractBoard3d(doc))
+		const [x0, y0, x1, y1] = scene.bounds
+		const holes = scene.objects.flatMap(o => o.holes.filter(h => h.t === "circle" && h.r > 2).map(h => h as { x: number; y: number; r: number }))
+		expect(holes.length).toBeGreaterThan(0)
+		let inside = 0
+		for (const m of g.meshes) {
+			if (m.role !== "copper") continue
+			for (let i = 0; i < m.positions.length; i += 3) {
+				const x = m.positions[i]! / MM + (x0 + x1) / 2, y = m.positions[i + 1]! / MM + (y0 + y1) / 2
+				if (holes.some(h => Math.hypot(x - h.x, y - h.y) < h.r * 0.9)) inside++
+			}
+		}
+		expect(inside).toBe(0)
+	})
+
 	// Oracle: each body record carries the outline and height Altium computed from its placed model.
 	test("Cubli: every STEP model, placed by Altium's rule, covers its body's outline and height", async () => {
 		const doc = parseAltiumFile(new Uint8Array(readFileSync(CUBLI))).document as any

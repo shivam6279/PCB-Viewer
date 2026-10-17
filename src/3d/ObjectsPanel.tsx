@@ -14,6 +14,7 @@ const ICONS: Record<string, ReactNode> = {
 	region: <path d="M8 2l6 4.5-2.3 7H4.3L2 6.5z" fill="none" stroke={BLUE} strokeWidth="1.3" />,
 	body: <><path d="M2 9l6-3 6 3-6 3z" fill={BLUE} /><path d="M2 9v2l6 3 6-3V9l-6 3z" fill="#3d6fa3" /></>,
 	dimension: <><text x="5" y="7" fontSize="7" fill={ORANGE}>10</text><path d="M3 13L13 9" stroke={ORANGE} strokeWidth="1.3" /></>,
+	solder: <><rect x="2" y="11" width="12" height="2.5" fill={GOLD} /><path d="M3 11.5Q6.5 11 7 5h2q.5 6 4 6.5z" fill="#c8cbd2" /></>,
 }
 
 // The 3D view's Objects panel: Top / Bottom, and which object types show.
@@ -28,7 +29,12 @@ export const OBJECT_KINDS_3D: { kind: string; label: string }[] = [
 	{ kind: "region", label: "Regions" },
 	{ kind: "body", label: "3D Body" },
 	{ kind: "dimension", label: "Dimensions" },
+	{ kind: "solder", label: "Solder Joints" },
 ]
+
+// Object types hidden until asked for: solder joints (built only when first shown).
+export const HIDDEN_3D_BY_DEFAULT = ["solder"]
+const isDefault = (hidden: Set<string>) => hidden.size === HIDDEN_3D_BY_DEFAULT.length && HIDDEN_3D_BY_DEFAULT.every(k => hidden.has(k))
 
 export interface Objects3dState {
 	side: "top" | "bottom" | null // the side button last pressed (none at first)
@@ -68,7 +74,7 @@ export function ObjectsPanel({ state, onSide, onKinds, onReset, onClose, hiddenP
 		else next.add(key)
 		onHiddenParts(next)
 	}
-	const changed = state.hiddenKinds.size > 0
+	const changed = !isDefault(state.hiddenKinds)
 	return (
 		<aside className="pcb-layers objects-3d" aria-label="Objects">
 			<div className="pcb-layers-tabs">

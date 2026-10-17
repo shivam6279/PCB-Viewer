@@ -40,6 +40,7 @@ export interface Page<T> {
 // a freed slot goes to waiting foreground requests first, so opening a commit isn't stuck behind them.
 export interface RequestOptions {
 	background?: boolean
+	fresh?: boolean // past the short-lived memo: asked again (still revalidated by ETag)
 }
 
 export interface GitHubClient {
@@ -106,8 +107,8 @@ export function createClient(opts: ClientOptions): GitHubClient {
 	}
 
 	// Identical requests already in flight share one response.
-	function getJson<T>(url: string, background = false): Promise<{ body: T; link: string | null }> {
-		const kept = opts.memoMs ? memo.get(url) : undefined
+	function getJson<T>(url: string, background = false, fresh = false): Promise<{ body: T; link: string | null }> {
+		const kept = opts.memoMs && !fresh ? memo.get(url) : undefined
 		if (kept && Date.now() - kept.at < opts.memoMs!) return Promise.resolve(kept.value as { body: T; link: string | null })
 		let p = inflight.get(url)
 		if (!p) {
@@ -123,7 +124,7 @@ export function createClient(opts: ClientOptions): GitHubClient {
 	}
 
 	const client: GitHubClient = {
-		json: async <T>(path: string, o?: RequestOptions) => (await getJson<T>(urlOf(path), o?.background)).body,
+		json: async <T>(path: string, o?: RequestOptions) => (await getJson<T>(urlOf(path), o?.background, o?.fresh)).body,
 		async page<T>(pathOrUrl: string, o?: RequestOptions) {
 			const { body, link } = await getJson<T[]>(urlOf(pathOrUrl), o?.background)
 			return { items: body, next: nextLink(link) }

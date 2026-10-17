@@ -31,7 +31,7 @@ test("every sheet in the hierarchy renders a drawn schematic", async ({ page }) 
 		const fileName = label.replace(/\s*\(.*$/, "")
 		await row.click()
 		// Wait for THIS sheet (not the previous one) to be on screen.
-		const nodeId = await page.getByLabel("Sheet", { exact: true }).inputValue()
+		const nodeId = await page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")
 		const view = page.locator(`.sch-view[data-node="${nodeId}"][data-status="ready"]`)
 		await expect(view).toBeVisible({ timeout: 30_000 })
 		const records = await view.locator("svg [data-record]").count()

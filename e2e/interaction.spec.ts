@@ -20,7 +20,7 @@ async function openCubli(page: Page) {
 
 async function openSheet(page: Page, label: string) {
 	await page.locator(".sidebar .tree-row", { hasText: label }).first().click()
-	const nodeId = await page.getByLabel("Sheet", { exact: true }).inputValue()
+	const nodeId = await page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")
 	await expect(page.locator(`.sch-view[data-node="${nodeId}"][data-status="ready"][data-compiled="true"]`)).toBeVisible({ timeout: 30_000 })
 	return nodeId
 }
@@ -98,11 +98,11 @@ test("clicking a component body shows its designator, comment, parameters and bo
 
 test("a sheet symbol opens its child sheet", async ({ page }) => {
 	await openCubli(page)
-	const top = await page.getByLabel("Sheet", { exact: true }).inputValue()
+	const top = await page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")
 	// The symbol's designator (its middle is often a sheet entry, which opens the port menu instead).
 	const p = await pointOn(page, 'g[data-k="32"][data-o]')
 	await page.mouse.click(p.x, p.y)
-	await expect.poll(() => page.getByLabel("Sheet", { exact: true }).inputValue()).not.toBe(top)
+	await expect.poll(() => page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")).not.toBe(top)
 	await expect(page.locator('.sch-view[data-status="ready"]')).toBeVisible()
 })
 
@@ -126,7 +126,7 @@ test("a port opens the instance menu at the cursor; picking one jumps, frames an
 	await expect(target).toBeVisible()
 	await target.click()
 	await expect(menu).toHaveCount(0)
-	await expect.poll(() => page.getByLabel("Sheet", { exact: true }).inputValue()).not.toBe(from)
+	await expect.poll(() => page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")).not.toBe(from)
 	const view = page.locator('.sch-view[data-status="ready"]')
 	await expect(view).toBeVisible()
 	await expect.poll(() => page.locator(".sch-overlay .sel-net").count()).toBeGreaterThan(0)
@@ -150,10 +150,10 @@ test("the Nets tree selects a net; its connectivity rows jump between channel sh
 	await expect(rows.filter({ hasText: "U_ESC2" })).toHaveCount(0) // only its own channel
 
 	await rows.filter({ hasText: "ESC_MCU(U_ESC_MCU1)" }).click()
-	await expect.poll(() => page.getByLabel("Sheet", { exact: true }).inputValue()).toContain("U_ESC_MCU")
+	await expect.poll(() => page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")).toContain("U_ESC_MCU")
 	await expect(page.locator('.sch-view[data-status="ready"]')).toBeVisible()
 	await expect.poll(() => page.locator(".sch-overlay .sel-net").count()).toBeGreaterThan(0)
-	await expect(page.getByLabel("Sheet", { exact: true }).locator("option:checked")).toHaveText("ESC_MCU (U_ESC_MCU1)")
+	await expect(page.getByRole("button", { name: "Sheet", exact: true })).toHaveText("ESC_MCU (U_ESC_MCU1)")
 	await expect(rows.filter({ hasText: "ESC_MCU(U_ESC_MCU1)" })).toHaveClass(/current/)
 	await shot(page, "connectivity-jump")
 })

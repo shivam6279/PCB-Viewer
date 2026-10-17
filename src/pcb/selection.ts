@@ -40,7 +40,8 @@ export function componentSelection(scene: PcbScene, index: number, compiled: Com
 }
 
 export function pcbHighlight(scene: PcbScene, selection: Selection | null, compiled: CompiledProject | null): PcbHighlight | null {
-	if (!selection) return null
+	// A ruler measurement is drawn by the view itself: nothing on the board is highlighted for it.
+	if (!selection || selection.kind === "measure") return null
 	const box = (ids: Iterable<number>) => {
 		let b: [number, number, number, number] | null = null
 		for (const id of ids) {
@@ -141,4 +142,21 @@ export function partLabel(scene: PcbScene, index: number, compiled: CompiledProj
 	const c = scene.components[index]
 	const placed = c?.sourceUniqueId ? compiled?.components.find(p => p.uniquePath === c.sourceUniqueId) : undefined
 	return placed?.designator ?? c?.designator ?? ""
+}
+
+// Which side of the board a selection is on: a part's side, or (pads, tracks, nets) the side of every
+// object's layer. null when it is on both, or passes through the board (vias, through-hole pads, inner
+// layers): the view keeps the side it has.
+export function selectionSide(scene: PcbScene, selection: Selection | null, compiled: CompiledProject | null, objects: Iterable<number>): "top" | "bottom" | null {
+	if (!selection) return null
+	const part = selection.kind === "pcbComponent" ? selection.index : selection.kind === "component" ? pcbComponentIndex(scene, compiled, selection.id) : -1
+	if (part >= 0) return scene.components[part]?.side ?? null
+	const sides = new Set<string>()
+	for (const id of objects) {
+		const layer = scene.objects[id]?.layer ?? ""
+		if (layer.startsWith("BOTTOM")) sides.add("bottom")
+		else if (layer.startsWith("TOP")) sides.add("top")
+		else return null
+	}
+	return sides.size === 1 ? ([...sides][0] as "top" | "bottom") : null
 }

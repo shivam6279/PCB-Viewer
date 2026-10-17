@@ -12,7 +12,7 @@ import type { PcbObject, PcbScene, Prim } from "../pcb/scene"
 import type { Board3d, StackLayer } from "./board3d"
 
 export const MM = 0.0254
-const SCALE = 100 // clipper units per mil
+export const SCALE = 100 // clipper units per mil
 const SILK_LIFT = 0.006 // mm above the mask
 const TILE_HOLES = 48 // holes per triangulation tile (see capTiled)
 
@@ -29,6 +29,7 @@ export interface GeoMesh {
 	positions: Float32Array
 	normals: Float32Array
 	index: Uint32Array
+	edges?: Float32Array // highlight copper: its outline on both faces, as line segments (x, y, z pairs)
 }
 
 export interface BoardGeometry {
@@ -90,6 +91,13 @@ const segs = (r: number, sweep = Math.PI * 2) => {
 	return Math.max(8, Math.min(Math.ceil((128 * sweep) / (Math.PI * 2)), Math.ceil(sweep / step)))
 }
 const pt = (x: number, y: number) => ({ X: Math.round(x * SCALE), Y: Math.round(y * SCALE) })
+
+// A circle as a polygon whose sides touch it from outside (circlePath's corners lie on it).
+function circleAround(x: number, y: number, r: number): Path64 {
+	const n = Math.max(16, segs(r))
+	const R = r / Math.cos(Math.PI / n)
+	return Array.from({ length: n }, (_, i) => pt(x + R * Math.cos((i / n) * Math.PI * 2), y + R * Math.sin((i / n) * Math.PI * 2)))
+}
 
 function circlePath(x: number, y: number, r: number): Path64 {
 	const n = Math.max(16, segs(r))
@@ -186,6 +194,16 @@ function difference(subject: Paths64, clip: Paths64): PolyTree64 {
 	const tree = new ClipperLib.PolyTree()
 	c.Execute(ClipperLib.ClipType.ctDifference, tree, NONZERO, NONZERO)
 	return tree
+}
+
+// A copper pour: an area (a ring, mils) less everything in keepouts grown by the clearance, as the
+// rings of an even-odd filled polygon (outlines and their holes).
+export function pourRings(area: number[], keepouts: Prim[], clearance: number): number[][] {
+	const avoid = ([] as Paths64)
+	for (const p of keepouts) primPaths(p, avoid)
+	const ring = ringPath(area)
+	if (!isPositive(ring)) ring.reverse()
+	return run(ClipperLib.ClipType.ctDifference, [ring], inflate(union(avoid), clearance * SCALE, false)).map(p => p.flatMap(q => [q.X / SCALE, q.Y / SCALE]))
 }
 
 function treeOf(paths: Paths64): PolyTree64 {
@@ -294,17 +312,18 @@ class MeshBuilder {
 
 	// Side walls of every contour of a polygon set between z0 (top) and z1, facing out of the material
 	// (or into it, for barrels seen from inside a hole: inward = true).
-	walls(tree: PolyTree64, z0: number, z1: number, inward = false) {
+	// skip: leaves out an edge (from, to; clipper units), e.g. one lining a drilled hole.
+	walls(tree: PolyTree64, z0: number, z1: number, inward = false, skip?: (a: ClipperNs.IntPoint, b: ClipperNs.IntPoint) => boolean) {
 		const visit = (node: PolyPathBase) => {
 			for (const child of node.Childs()) {
-				this.wallRing(child.Contour(), child.IsHole(), z0, z1, inward)
+				this.wallRing(child.Contour(), child.IsHole(), z0, z1, inward, skip)
 				visit(child)
 			}
 		}
 		visit(tree)
 	}
 
-	wallRing(ring: Path64, hole: boolean, z0: number, z1: number, inward = false) {
+	wallRing(ring: Path64, hole: boolean, z0: number, z1: number, inward = false, skip?: (a: ClipperNs.IntPoint, b: ClipperNs.IntPoint) => boolean) {
 		const n = ring.length
 		if (n < 3) return
 		const pts = ring.map(p => this.xy(p))
@@ -322,6 +341,7 @@ class MeshBuilder {
 			edgeN.push([(sign * dy) / l, (-sign * dx) / l])
 		}
 		for (let i = 0; i < n; i++) {
+			if (skip?.(ring[i]!, ring[(i + 1) % n]!)) continue
 			const [x0, y0] = pts[i]!, [x1, y1] = pts[(i + 1) % n]!
 			const ne = edgeN[i]!
 			const smooth = (j: number) => {
@@ -374,6 +394,7 @@ interface Drill {
 	plated: boolean
 	tentTop: boolean // a tented via: the mask stays closed over it
 	tentBottom: boolean
+	circle?: { x: number; y: number; r: number } // a round hole (mils)
 }
 
 interface Context {
@@ -417,10 +438,34 @@ function drillsOf(ctx: Context): Drill[] {
 				const n = 12, R = h.r / Math.cos(Math.PI / n)
 				coarse = Array.from({ length: n }, (_, i) => pt(h.x + R * Math.cos((i / n) * Math.PI * 2), h.y + R * Math.sin((i / n) * Math.PI * 2)))
 			}
-			out.push({ kind: kindOf(o), path: paths[0], coarse, from, to, plated: o.pad?.plated !== false, tentTop: o.kind === "via" && o.mask?.top === null, tentBottom: o.kind === "via" && o.mask?.bottom === null })
+			out.push({ kind: kindOf(o), path: paths[0], coarse, from, to, plated: o.pad?.plated !== false, tentTop: o.kind === "via" && o.mask?.top === null, tentBottom: o.kind === "via" && o.mask?.bottom === null, circle: h.t === "circle" ? { x: h.x, y: h.y, r: h.r } : undefined })
 		}
 	}
 	return out
+}
+
+// A solder mask's openings: pads and vias by their mask expansion, shapes drawn on the mask layer
+// itself, and every hole a via is not tented over. For the export, which can leave things out: with no
+// copper the mask covers everything but the drilled holes (not tented); an undrilled via's hole it
+// covers (its pad's opening, untented, stays: the copper shows, solid).
+function maskOpenings(ctx: Context, side: "top" | "bottom", layerKey: string, drills: Drill[], { copper = true, viaHoles = true } = {}): Paths64 {
+	const openings = ([] as Paths64)
+	if (!copper) {
+		for (const d of drills) if ((viaHoles || d.kind !== "via") && !(side === "top" ? d.tentTop : d.tentBottom)) openings.push(d.path)
+		return union(openings)
+	}
+	for (const o of ctx.scene.objects) {
+		const expansion = o.mask?.[side]
+		const isOpening = o.layer === layerKey
+		if ((expansion === undefined || expansion === null) && !isOpening) continue
+		const paths = ([] as Paths64)
+		for (const p of o.prims) primPaths(p, paths)
+		if (!paths.length) continue
+		const grown = expansion ? inflate(union(paths), expansion * SCALE, true) : paths
+		for (const p of grown) openings.push(p)
+	}
+	for (const d of drills) if (!(side === "top" ? d.tentTop : d.tentBottom) && (viaHoles || d.kind !== "via")) openings.push(d.path)
+	return union(openings)
 }
 
 function boardOutline(ctx: Context): Paths64 {
@@ -444,11 +489,36 @@ const pathsOf = (drills: Drill[]) => {
 }
 
 // Copper of a set of objects on one copper layer, minus the drills through it.
-// A layer's copper: drilled (its faces) and undrilled (its edges: a drilled hole's edge is lined by the
-// hole's barrel, so it needs no wall of its own; leaving them out halves the inner layers' triangles).
+// A layer's copper, its drills cut out, and which of its edges line a drill: a drilled hole's edge is
+// lined by the hole's barrel, so it gets no wall of its own (leaving them out halves the inner layers'
+// triangles).
 interface CopperTrees {
 	drilled: PolyTree64
-	solid: PolyTree64
+	inDrill: (a: ClipperNs.IntPoint, b: ClipperNs.IntPoint) => boolean
+}
+
+// Whether an edge lies along one of the cut paths: its midpoint within a hair of (or inside) one.
+// The paths are looked up by a grid over their boxes (a board has thousands of drills).
+function onCuts(cuts: Paths64): (a: ClipperNs.IntPoint, b: ClipperNs.IntPoint) => boolean {
+	const CELL = 50 * SCALE
+	const grown = inflate(cuts, 2, true)
+	const grid = new Map<string, Path64[]>()
+	for (const path of grown) {
+		let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+		for (const q of path) (x0 = Math.min(x0, q.X)), (y0 = Math.min(y0, q.Y)), (x1 = Math.max(x1, q.X)), (y1 = Math.max(y1, q.Y))
+		for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++)
+			for (let gy = Math.floor(y0 / CELL); gy <= Math.floor(y1 / CELL); gy++) {
+				const k = `${gx},${gy}`
+				const list = grid.get(k)
+				if (list) list.push(path)
+				else grid.set(k, [path])
+			}
+	}
+	return (a, b) => {
+		const m = { X: Math.round((a.X + b.X) / 2), Y: Math.round((a.Y + b.Y) / 2) }
+		const near = grid.get(`${Math.floor(m.X / CELL)},${Math.floor(m.Y / CELL)}`)
+		return !!near?.some(path => ClipperLib.Clipper.PointInPolygon(m, path) !== 0)
+	}
 }
 
 function copperTree(ctx: Context, objects: PcbObject[], layerIndex: number, drills: Drill[]): CopperTrees | null {
@@ -458,31 +528,19 @@ function copperTree(ctx: Context, objects: PcbObject[], layerIndex: number, dril
 	const through = drills.filter(d => d.from <= layerIndex && d.to >= layerIndex)
 	const merged = union(paths)
 	const inner = layerIndex > 0 && layerIndex < ctx.copper.length - 1
-	return { drilled: difference(merged, inner ? through.map(d => d.coarse) : pathsOf(through)), solid: treeOf(merged) }
+	const cuts = inner ? through.map(d => d.coarse) : pathsOf(through)
+	return { drilled: difference(merged, cuts), inDrill: onCuts(cuts) }
 }
 
-// Copper as a slab of its stackup thickness. Outer layers: the outward face, and edges where they can
-// be seen (pads in their mask openings; highlights). Inner layers: both faces and their edges (seen
-// through the translucent board edge, and in a highlighted net).
+// Copper as a solid slab of its stackup thickness, on every layer: both faces and its edges, so it has
+// real volume seen at an angle through the board's edge or from its inner side (a sheet with no
+// underside read as paper).
 function copperMesh(ctx: Context, trees: CopperTrees, layer: StackLayer, kind: string): GeoMesh | null {
-	const tree = trees.drilled
 	const m = new MeshBuilder(ctx.cx, ctx.cy)
 	const z0 = ctx.z(layer.top), z1 = ctx.z(layer.bottom)
-	const copper = ctx.copper
-	// Edges only where they can be seen: pads in their mask openings (and highlights, kind "").
-	// Tracks, vias and pours stay under the mask, where a 35 µm edge is invisible.
-	const edges = kind === "pad" || kind === ""
-	if (layer === copper[0]) {
-		m.cap(tree, z0, true)
-		if (edges) m.walls(trees.solid, z0, z1)
-	} else if (layer === copper[copper.length - 1]) {
-		m.cap(tree, z1, false)
-		if (edges) m.walls(trees.solid, z0, z1)
-	} else {
-		m.cap(tree, z0, true)
-		m.cap(tree, z1, false)
-		m.walls(trees.solid, z0, z1)
-	}
+	m.cap(trees.drilled, z0, true)
+	m.cap(trees.drilled, z1, false)
+	m.walls(trees.drilled, z0, z1, false, trees.inDrill)
 	return m.empty ? null : m.mesh("copper", layer.key, kind)
 }
 
@@ -543,19 +601,7 @@ export function buildBoardGeometry(scene: PcbScene, board: Board3d): BoardGeomet
 		const layer = board.stack.find(l => l.kind === "mask" && l.key === (side === "top" ? "TOPSOLDER" : "BOTTOMSOLDER"))
 		const copperLayer = side === "top" ? board.stack[first]! : board.stack[last]!
 		if (!layer) continue
-		const openings = ([] as Paths64)
-		for (const o of scene.objects) {
-			const expansion = o.mask?.[side]
-			const isOpening = o.layer === layer.key
-			if ((expansion === undefined || expansion === null) && !isOpening) continue
-			const paths = ([] as Paths64)
-			for (const p of o.prims) primPaths(p, paths)
-			if (!paths.length) continue
-			const grown = expansion ? inflate(union(paths), expansion * SCALE, true) : paths
-			for (const p of grown) openings.push(p)
-		}
-		for (const d of drills) if (!(side === "top" ? d.tentTop : d.tentBottom)) openings.push(d.path)
-		const tree = difference(outline, union(openings))
+		const tree = difference(outline, maskOpenings(ctx, side, layer.key, drills))
 		const m = new MeshBuilder(ctx.cx, ctx.cy)
 		// The mask fills from its surface down to the dielectric, around the outer copper.
 		const surface = side === "top" ? ctx.z(layer.top) : ctx.z(layer.bottom)
@@ -609,6 +655,26 @@ function barrels(ctx: Context, drills: Drill[], only?: string): GeoMesh[] {
 	return out
 }
 
+// Every contour of a polygon set (outlines and holes) at each height, as line segments: the outline
+// the Shift-hover draws round a net's copper, straight from the polygons (no edge search on the mesh).
+function outlineEdges(ctx: Context, tree: PolyTree64, zs: number[]): Float32Array {
+	const out: number[] = []
+	const visit = (node: PolyPathBase) => {
+		for (const child of node.Childs()) {
+			const ring = child.Contour()
+			for (let i = 0; i < ring.length; i++) {
+				const a = ring[i]!, b = ring[(i + 1) % ring.length]!
+				const ax = (a.X / SCALE - ctx.cx) * MM, ay = (a.Y / SCALE - ctx.cy) * MM
+				const bx = (b.X / SCALE - ctx.cx) * MM, by = (b.Y / SCALE - ctx.cy) * MM
+				for (const z of zs) out.push(ax, ay, z, bx, by, z)
+			}
+			visit(child)
+		}
+	}
+	visit(tree)
+	return new Float32Array(out)
+}
+
 // The copper of some objects (a net, a part's pads, one via…) on every layer they are on, with the
 // drills cut out, plus the barrels of their own plated holes: drawn in the highlight colour.
 export function buildHighlightGeometry(scene: PcbScene, board: Board3d, ids: number[]): GeoMesh[] {
@@ -621,7 +687,9 @@ export function buildHighlightGeometry(scene: PcbScene, board: Board3d, ids: num
 		if (!on.length) return
 		const tree = copperTree(ctx, on, li, drills)
 		const mesh = tree && copperMesh(ctx, tree, layer, "")
-		if (mesh) meshes.push(mesh)
+		if (!mesh) return
+		mesh.edges = outlineEdges(ctx, tree.drilled, [ctx.z(layer.top), ctx.z(layer.bottom)])
+		meshes.push(mesh)
 	})
 	const own = new Set(objects)
 	const ownDrills: Drill[] = []
@@ -629,4 +697,146 @@ export function buildHighlightGeometry(scene: PcbScene, board: Board3d, ids: num
 	for (const d of all) if (d.plated) ownDrills.push(d)
 	meshes.push(...barrels(ctx, ownDrills, ""))
 	return meshes
+}
+
+// --- outlines for export ---------------------------------------------------------------------------
+
+// One region of a layer's outline, in board mils: its outer ring (counter-clockwise) and its holes
+// (clockwise), each a flat x,y list.
+export interface LayerRegion {
+	outer: number[]
+	holes: number[][]
+}
+
+export interface OuterLayers {
+	copper: { top: LayerRegion[]; bottom: LayerRegion[] }
+	mask: { top: LayerRegion[]; bottom: LayerRegion[] } // the mask itself: the board minus its openings
+	silk: { top: LayerRegion[]; bottom: LayerRegion[] }
+	// Plated holes that are drilled (via holes only when asked), board mils: each gets a copper barrel.
+	barrels: { x: number; y: number; r: number }[]
+}
+
+// Curves for export: coarser than on screen (a file, not a close-up), so a board's copper stays a few
+// megabytes. 0.2 mil = 5 µm from the true arc.
+const EXPORT_TOLERANCE = 0.2
+
+// The outer copper layers (pads, tracks, pours, minus their holes; via holes only when asked), the
+// solder masks (the board minus their openings) and the silkscreen (clipped to the board), as
+// outlines with holes; and the plated holes that get a barrel.
+// exposedOnly: the copper only where the solder mask leaves it open (all the copper a board with a
+// mask shows), its pours and tracks under the mask left out.
+export function outerLayers(
+	scene: PcbScene,
+	board: Board3d,
+	{ viaHoles, exposedOnly, copper: withCopper = true, tolerance = EXPORT_TOLERANCE }: { viaHoles: boolean; exposedOnly: boolean; copper?: boolean; tolerance?: number },
+): OuterLayers {
+	return withTolerance(tolerance, () => {
+		const ctx = context(scene, board)
+		// Round holes are cut as polygons around the circle, not inside it: a hole's barrel (a true
+		// cylinder in the export) then shows whole, never behind a chord of the copper or mask.
+		const outside = (d: Drill): Drill => (d.circle ? { ...d, path: circleAround(d.circle.x, d.circle.y, d.circle.r) } : d)
+		const all = drillsOf(ctx).map(outside)
+		const drills = all.filter(d => viaHoles || d.kind !== "via")
+		const outline = boardOutline(ctx)
+		const maskKey = (side: "top" | "bottom") => {
+			const key = side === "top" ? "TOPSOLDER" : "BOTTOMSOLDER"
+			return board.stack.some(l => l.kind === "mask" && l.key === key) ? key : null
+		}
+		const copperOf = (li: number, side: "top" | "bottom"): LayerRegion[] => {
+			const layer = ctx.copper[li]!
+			const paths = ([] as Paths64)
+			for (const o of scene.objects) if (layersOf(ctx, o).includes(layer.key)) for (const p of o.prims) primPaths(p, paths)
+			if (!paths.length) return []
+			const key = maskKey(side)
+			// Never past the board's edge (a track's round end run off it, say).
+			const onBoard = run(ClipperLib.ClipType.ctIntersection, union(paths), outline)
+			const copper = exposedOnly && key ? run(ClipperLib.ClipType.ctIntersection, onBoard, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles })) : onBoard
+			const through = drills.filter(d => d.from <= li && d.to >= li)
+			return regionsOf(difference(copper, pathsOf(through)))
+		}
+		const silkOf = (key: string): LayerRegion[] => {
+			const paths = ([] as Paths64)
+			for (const o of scene.objects) if (o.layer === key) for (const p of o.prims) primPaths(p, paths)
+			if (!paths.length) return []
+			return regionsOf(treeOf(run(ClipperLib.ClipType.ctIntersection, union(paths), outline)))
+		}
+		const maskOf = (side: "top" | "bottom"): LayerRegion[] => {
+			const key = maskKey(side)
+			if (!key) return []
+			// Openings over what the export leaves out are closed: no copper, no openings but the holes;
+			// a via left solid is covered.
+			return regionsOf(difference(outline, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles })))
+		}
+		const barrels: OuterLayers["barrels"] = []
+		for (const o of scene.objects) {
+			if (!o.pad?.plated || (o.kind === "via" && !viaHoles)) continue
+			for (const h of o.holes) if (h.t === "circle" && h.r > 0) barrels.push({ x: h.x, y: h.y, r: h.r })
+		}
+		const last = ctx.copper.length - 1
+		return {
+			copper: { top: last >= 0 ? copperOf(0, "top") : [], bottom: last > 0 ? copperOf(last, "bottom") : [] },
+			mask: { top: maskOf("top"), bottom: maskOf("bottom") },
+			silk: { top: silkOf("TOPOVERLAY"), bottom: silkOf("BOTTOMOVERLAY") },
+			barrels,
+		}
+	})
+}
+
+// A polygon tree as regions (islands inside holes become regions of their own), near-duplicate and
+// collinear points dropped.
+function regionsOf(tree: PolyTree64): LayerRegion[] {
+	const out: LayerRegion[] = []
+	const flat = (ring: Path64, outer: boolean) => {
+		const clean = ClipperLib.Clipper.CleanPolygon(ring, 1.5)
+		if (clean.length < 3) return null
+		if (isPositive(clean) !== outer) clean.reverse()
+		return clean.flatMap(p => [p.X / SCALE, p.Y / SCALE])
+	}
+	const add = (node: PolyPathBase) => {
+		const outer = flat(node.Contour(), true)
+		if (outer) out.push({ outer, holes: node.Childs().map(h => flat(h.Contour(), false)).filter((h): h is number[] => h !== null) })
+	}
+	const visit = (node: PolyPathBase) => {
+		for (const child of node.Childs()) {
+			if (child.IsHole()) continue
+			const points = child.Contour().length + child.Childs().reduce((n, h) => n + h.Contour().length, 0)
+			if (points > TILE_POINTS) for (const tile of tiles(child, Math.ceil(Math.sqrt(points / TILE_POINTS)))) visit(tile)
+			else add(child)
+			for (const hole of child.Childs()) visit(hole)
+		}
+	}
+	visit(tree)
+	return out
+}
+
+// A region bigger than this many points (a ground pour: Cubli's has ~8000; a solder mask, the whole
+// board) is cut into tiles for export: CAD kernels check a face's boundary in time that grows much
+// faster than its size (reading Cubli's copper took OpenCascade 100 s with its two pours whole). Each
+// seam is an edge in CAD, so the tiles are as large as that allows.
+const TILE_POINTS = 2000
+
+// A polygon (with its holes, not its islands) cut by an n x n grid over its extent: a tree per cell.
+function tiles(node: PolyPathBase, n: number): PolyTree64[] {
+	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+	for (const p of node.Contour()) {
+		x0 = Math.min(x0, p.X)
+		y0 = Math.min(y0, p.Y)
+		x1 = Math.max(x1, p.X)
+		y1 = Math.max(y1, p.Y)
+	}
+	const sx = (x1 - x0) / n, sy = (y1 - y0) / n
+	const out: PolyTree64[] = []
+	for (let i = 0; i < n; i++)
+		for (let j = 0; j < n; j++) {
+			const ax = Math.floor(x0 + i * sx), bx = i === n - 1 ? x1 : Math.floor(x0 + (i + 1) * sx)
+			const ay = Math.floor(y0 + j * sy), by = j === n - 1 ? y1 : Math.floor(y0 + (j + 1) * sy)
+			const c = new ClipperLib.Clipper()
+			c.AddPath(node.Contour(), ClipperLib.PolyType.ptSubject, true)
+			for (const h of node.Childs()) c.AddPath(h.Contour(), ClipperLib.PolyType.ptSubject, true)
+			c.AddPath([{ X: ax, Y: ay }, { X: bx, Y: ay }, { X: bx, Y: by }, { X: ax, Y: by }], ClipperLib.PolyType.ptClip, true)
+			const tile = new ClipperLib.PolyTree()
+			c.Execute(ClipperLib.ClipType.ctIntersection, tile, ClipperLib.PolyFillType.pftEvenOdd, NONZERO)
+			out.push(tile)
+		}
+	return out
 }

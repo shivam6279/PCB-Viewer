@@ -26,7 +26,7 @@ export function useGitHubProjects(gh: GitHub, owner: string): GitHubProjects {
 		setLoading(true)
 		setError(null)
 		if (remembered?.key !== key) setDiscovery(null)
-		discoverProjects(gh, owner, d => live && setDiscovery(d))
+		discoverProjects(gh, owner, d => live && setDiscovery(d), generation > 0)
 			.then(d => {
 				if (!live) return
 				setDiscovery(d)

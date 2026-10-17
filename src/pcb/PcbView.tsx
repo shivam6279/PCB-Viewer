@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { useAppStore } from "../app/store"
+import { drawMeasure, drawSnapMarker, flatProjector, measureAt, type DrawnMeasure } from "../measure/draw"
+import { MeasureBar, MeasureLegend } from "../measure/MeasureBar"
+import { circleAt, snapAt } from "../measure/snap"
+import { MeasureTool, measureKey, type ToolHost } from "../measure/tool"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import { whenIdle } from "../app/idle"
 import type { Parser } from "../parse/parser"
@@ -8,13 +12,13 @@ import { buildRenderCache, CANVAS_BG, drawComponentBox, drawNetGlow, drawObjectO
 import { drawLabels } from "./labels"
 import { buildIndex, componentAt, hitsAt, hitTest, netAt, objectsIn, type HitOptions, type PcbHit, type PcbIndex } from "./hit"
 import { LayersPanel } from "./LayersPanel"
-import { componentSelection, hitInSelection, hitLabel, hitPosition, hitSelection, netSelection, openPart, pcbHighlight, pcbNetName } from "./selection"
+import { componentSelection, hitInSelection, hitLabel, hitPosition, hitSelection, netSelection, openPart, pcbHighlight, pcbNetName, selectionSide } from "./selection"
 import { PickMenu, type PickRow } from "./PickMenu"
 import type { PcbObject, PcbScene, PcbSceneComponent } from "./scene"
 import { usePcbScene } from "./use-scene"
 import { StackupDialog } from "./StackupDialog"
 import { LayerLegend } from "./LayerLegend"
-import { cycleCurrent, nextMode, onlyLayer, type LayerState } from "./layer-state"
+import { cycleCurrent, makeCurrent, nextMode, onlyLayer, type LayerState } from "./layer-state"
 import { drawOrder } from "./layers"
 import { FlipHorizontal2 } from "lucide-react"
 
@@ -57,7 +61,8 @@ export function defaultLayerState(scene: PcbScene): LayerState {
 }
 
 // Pointer and wheel events over the panels and the legend are theirs, not the board's.
-const inPanel = (e: Event) => (e.target as Element | null)?.closest?.(".pcb-layers, .pcb-legend, .pcb-mirror-badge") != null
+const SNAP_PX = 10 // CSS px: how far the ruler reaches for something to snap to
+const inPanel = (e: Event) => (e.target as Element | null)?.closest?.(".pcb-layers, .pcb-legend, .pcb-mirror-badge, .measure-bar") != null
 
 const closeStackup = () => useAppStore.getState().setPcbStackupOpen(false)
 
@@ -111,6 +116,22 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const lastClick = useRef<{ x: number; y: number } | null>(null)
 	const [menu, setMenu] = useState<{ x: number; y: number; hits: PcbHit[]; nets: string[] } | null>(null)
 	const [cycleNote, setCycleNote] = useState<{ at: number; of: number; kind: string; label: string } | null>(null)
+	// The ruler: on or off (shared with the 3D view), its measurements, and the one being made here.
+	const measuring = useAppStore(s => s.measuring) && active && !pane.diff
+	const measuringRef = useRef(measuring)
+	measuringRef.current = measuring
+	const measures = useAppStore(s => s.measures)
+	const drawnMeasures = useRef<DrawnMeasure[]>([])
+	const hostRef = useRef<Omit<ToolHost, "redraw" | "scaleAt">>({ point: () => null, circle: () => null, place: () => null })
+	const toolRef = useRef<MeasureTool | null>(null)
+	toolRef.current ??= new MeasureTool("pcb", {
+		point: (x, y, free) => hostRef.current.point(x, y, free),
+		circle: (x, y) => hostRef.current.circle(x, y),
+		place: (x, y, m) => hostRef.current.place(x, y, m),
+		scaleAt: () => (camera.current?.scale ?? 0) / (window.devicePixelRatio || 1),
+		redraw: () => blit.current(),
+	})
+	const tool = toolRef.current
 
 	const load = usePcbScene(parser, data, projectData.status === "error" ? projectData.message : null)
 	const scene = load.status === "ready" ? load.scene : null
@@ -266,6 +287,23 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		if (padBox && padBox !== hovered) drawComponentBox(ctx, cam, padBox, false)
 		const previewed = previewObject.current !== null ? scene?.objects[previewObject.current] : undefined
 		if (previewed) drawObjectOutline(ctx, cam, previewed)
+		// The ruler's measurements, the one being made, and where the next click would land.
+		const toCanvas = (p: { x: number; y: number }) => ({ x: el.width / 2 + f * (p.x - cam.cx) * cam.scale, y: el.height / 2 - (p.y - cam.cy) * cam.scale })
+		const project = flatProjector(toCanvas, cam.scale)
+		const ratio = window.devicePixelRatio || 1
+		const sel = useAppStore.getState().selection
+		const drawn: DrawnMeasure[] = []
+		for (const m of useAppStore.getState().measures) {
+			if (m.view !== "pcb") continue
+			const d = drawMeasure(ctx, m, project, ratio, sel?.kind === "measure" && sel.id === m.id ? "selected" : "idle")
+			if (d) drawn.push(d)
+		}
+		drawnMeasures.current = drawn
+		if (measuringRef.current) {
+			const live = tool.live
+			if (live) drawMeasure(ctx, live, project, ratio, "live")
+			if (tool.cursor && tool.marking) drawSnapMarker(ctx, toCanvas(tool.cursor), tool.cursor.snap, ratio, tool.cursor.target)
+		}
 		return cx - w / 2 <= 0 && cy - h / 2 <= 0 && cx + w / 2 >= el.width && cy + h / 2 >= el.height
 	}
 	// The part boxes are fitted to the 3D models once those are in (see fitBoxesToModels): repaint the
@@ -362,6 +400,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 				hover: () => hoverComponent.current,
 				padPart: () => padPart.current,
 				glow: () => ({ target: glow.current.target, nets: Object.fromEntries(glow.current.nets) }),
+				ruler: () => ({ first: tool.first, picked: tool.picked }),
 				pick: (x: number, y: number) => pickRef.current({ x, y }),
 				hits: (x: number, y: number) => stackRef.current({ x, y }),
 				view(cx: number, cy: number, scale: number) {
@@ -405,6 +444,12 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		// hovers there.
 		let pointer: { x: number; y: number } | null = null
 		const onMove = (e: PointerEvent) => {
+			if (!drag && measuringRef.current) {
+				pointer = inPanel(e) ? null : { x: e.clientX, y: e.clientY }
+				if (pointer) tool.move(e.clientX, e.clientY, e.ctrlKey)
+				else tool.leave()
+				return
+			}
 			if (!drag) {
 				pointer = inPanel(e) ? null : { x: e.clientX, y: e.clientY }
 				hoverRef.current(pointer && toWorld(pointer.x, pointer.y), e.shiftKey)
@@ -427,21 +472,30 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			pannedRight = drag !== null && drag.moved && drag.button === 2
 			drag = null
 			fr.classList.remove("panning")
-			if (click) clickRef.current(toWorld(e.clientX, e.clientY))
+			if (click && measuringRef.current) tool.click(e.clientX, e.clientY, e.ctrlKey)
+			else if (click) clickRef.current(toWorld(e.clientX, e.clientY), devicePoint(e.clientX, e.clientY))
+		}
+		// A client point in the canvas's device pixels (where measurements are drawn and hit).
+		const devicePoint = (clientX: number, clientY: number) => {
+			const r = el.getBoundingClientRect()
+			return { x: (clientX - r.left) * dpr(), y: (clientY - r.top) * dpr() }
 		}
 		// Double-click on anything with a net selects and highlights the whole net.
 		const onDouble = (e: MouseEvent) => {
-			if (inPanel(e)) return
+			if (inPanel(e) || measuringRef.current) return
 			doubleRef.current(toWorld(e.clientX, e.clientY))
 		}
 		const onLeave = () => {
 			pointer = null
+			if (measuringRef.current) tool.leave()
 			// Coming back onto the board onto any net, the same one included, is moving onto it.
 			if (shiftHover.current) shiftHover.current.quiet = null
 			hoverRef.current(null, false)
 		}
 		// Pressing Shift glows nothing by itself: only moving onto a net afterwards does (see shiftHover).
 		const onShift = (e: KeyboardEvent) => {
+			// Ctrl turns the ruler's snapping off while held: the marker follows at once.
+			if (e.key === "Control" && !e.repeat && measuringRef.current) return tool.refresh(e.type === "keydown")
 			if (e.key !== "Shift" || e.repeat) return
 			const down = e.type === "keydown"
 			shiftHover.current = down ? { quiet: pointer ? undefined : null, armed: false } : null
@@ -500,7 +554,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	}, [scene])
 
 	const fitRef = useRef<(b: [number, number, number, number], minWidth: number) => void>(() => {})
-	const clickRef = useRef<(p: { x: number; y: number }) => void>(() => {})
+	const clickRef = useRef<(p: { x: number; y: number }, device: { x: number; y: number }) => void>(() => {})
 	const hitOptions = (): HitOptions | null => {
 		const cam = camera.current
 		if (!cam || !layers || !rules) return null
@@ -529,10 +583,13 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	pickRef.current = pick
 	const stackRef = useRef<(p: { x: number; y: number }) => PcbHit[]>(() => [])
 	stackRef.current = stackAt
-	clickRef.current = p => {
+	clickRef.current = (p, device) => {
 		const { select } = useAppStore.getState()
 		lastClick.current = p
 		setCycleNote(null)
+		// A measurement is picked over the board under it.
+		const measure = measureAt(drawnMeasures.current, device, window.devicePixelRatio || 1)
+		if (measure !== null) return select({ kind: "measure", id: measure })
 		const hit = pick(p)
 		if (!scene || !hit) return select(null)
 		// With something selected, a click outside it only clears the selection (and brings hover back).
@@ -625,12 +682,16 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		g.frame = requestAnimationFrame(step)
 	}
 
-	// Frame the selection when another view or a panel link asks for it.
+	// Frame the selection when another view or a panel link asks for it, on its side's copper layer (a
+	// bottom-side part on BOTTOM); something on both sides keeps the current layer.
 	useEffect(() => {
 		if (pane.diff || !scene || !highlight?.frame || focusSeq === consumedFocus) return
 		consumedFocus = focusSeq
 		fitRef.current(highlight.frame, 150)
-	}, [focusSeq, scene, highlight])
+		const side = selectionSide(scene, selection, data?.compiled ?? null, highlight.objects)
+		const key = side === "bottom" ? "BOTTOM" : side === "top" ? "TOP" : null
+		if (key && scene.layers.some(l => l.key === key)) setLayers(prev => (prev && prev.current !== key ? makeCurrent(prev, key) : prev))
+	}, [focusSeq, scene, highlight, selection, data])
 
 	useEffect(() => {
 		if (!layerLink || !layers || followsLayers) return
@@ -641,12 +702,66 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		return layerLink.subscribe(v => setLayers(v))
 	}, [layerLink, followsLayers])
 
+	// Where the ruler's clicks land, in board terms: a point on the nearest thing to snap to within reach
+	// (what the layer view makes active: with Current only or Highlight, only what is on the current layer), or where the cursor is with Ctrl held or nothing near; the circle
+	// under the cursor; the cursor itself, for placing a dimension line.
+	{
+		const board = (clientX: number, clientY: number) => {
+			const el = canvas.current, cam = camera.current
+			if (!el || !cam) return null
+			const r = el.getBoundingClientRect()
+			const ratio = window.devicePixelRatio || 1
+			const px = (clientX - r.left) * ratio, py = (clientY - r.top) * ratio
+			return { x: cam.cx + ((cam.flip ? -1 : 1) * (px - el.width / 2)) / cam.scale, y: cam.cy - (py - el.height / 2) / cam.scale, reach: (SNAP_PX * ratio) / cam.scale, perMil: cam.scale / ratio }
+		}
+		hostRef.current = {
+			point(clientX, clientY, free) {
+				const p = board(clientX, clientY), idx = index.current
+				if (!p || !scene || !idx || !rules) return null
+				const kinds = useAppStore.getState().snapKinds
+				const snap = free || kinds.size === 0 ? null : snapAt(scene, idx, p.x, p.y, { reach: p.reach, kinds, isShown: rules.isActive, pxPerMil: p.perMil })
+				return snap ? { x: snap.x, y: snap.y, z: 0, snap: snap.kind, on: snap.on, target: snap.target } : { x: p.x, y: p.y, z: 0, snap: null, on: null }
+			},
+			circle(clientX, clientY) {
+				const p = board(clientX, clientY), idx = index.current
+				if (!p || !scene || !idx || !rules) return null
+				const c = circleAt(scene, idx, p.x, p.y, { reach: p.reach, isShown: rules.isActive })
+				if (!c) return null
+				const d = Math.hypot(p.x - c.x, p.y - c.y)
+				const [ux, uy] = d > 1e-6 ? [(p.x - c.x) / d, (p.y - c.y) / d] : [1, 0]
+				return { a: { x: c.x, y: c.y, z: 0, snap: "center", on: c.on }, b: { x: c.x + ux * c.r, y: c.y + uy * c.r, z: 0, snap: "edge", on: c.on } }
+			},
+			place(clientX, clientY) {
+				const p = board(clientX, clientY)
+				return p && { x: p.x, y: p.y, z: 0 }
+			},
+		}
+	}
+	// The kind of measurement changed (in the bar): what is being made redrawn as that kind.
+	const measureMode = useAppStore(s => s.measureMode)
+	useEffect(() => {
+		if (measuringRef.current) tool.refresh()
+	}, [measureMode, tool])
+	// The ruler off (or another tab shown): the measurement being made is dropped.
+	useEffect(() => {
+		if (measuring) return
+		tool.reset()
+		blit.current()
+	}, [measuring])
+	// Measurements added, changed or removed (here, in the panel, or in the 3D view), and the selection.
+	useEffect(() => {
+		blit.current()
+	}, [measures, selection])
+
 	// Keyboard: +/- step the current layer, Shift+S the layer mode, F mirrors, Esc clears the selection,
-	// Shift+Tab steps through what is under the last click.
+	// Shift+Tab steps through what is under the last click. The ruler: M turns it on or off, Space
+	// cycles what is measured, Esc drops the measurement being made (else turns it off), Delete removes
+	// a selected measurement.
 	useEffect(() => {
 		if (!scene || !active || followsLayers) return
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
+			if (measureKey(e, tool)) return
 			if (e.key === "Escape") useAppStore.getState().select(null)
 			if (e.ctrlKey || e.metaKey || e.altKey) return
 			if (e.key === "Tab" && e.shiftKey) {
@@ -706,7 +821,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	}
 
 	return (
-		<div className="pcb-view" ref={frame} data-status={load.status}>
+		<div className={`pcb-view${measuring ? " measuring" : ""}`} ref={frame} data-status={load.status}>
 			<canvas ref={canvas} className="pcb-canvas" />
 			{load.status === "loading" && <div className="view-message">Loading board…</div>}
 			{load.status === "none" && <div className="view-message">This project has no board</div>}
@@ -721,6 +836,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 					)
 					return pane.panelHost ? createPortal(panel, pane.panelHost) : panel
 				})()}
+			{measuring && <MeasureBar view="pcb" />}
+			{measuring && <MeasureLegend />}
 			{scene && layers && layers.flip && (
 				<button className="pcb-mirror-badge" onClick={() => !followsLayers && setLayers({ ...layers, flip: false })} disabled={followsLayers}>
 					<FlipHorizontal2 size={14} />

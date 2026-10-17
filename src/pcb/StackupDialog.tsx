@@ -1,3 +1,4 @@
+import { Backdrop } from "../shell/Backdrop"
 import { X } from "lucide-react"
 import { useEffect, useState } from "react"
 import { stackupThickness, type StackupKind, type StackupLayer } from "./stackup"
@@ -48,7 +49,7 @@ export function StackupDialog({ stackup, colors, onClose }: { stackup: StackupLa
 	const copperCount = stackup.filter(l => l.kind === "signal" || l.kind === "plane").length
 	let copperIndex = 0
 	return (
-		<div className="stackup-backdrop" onPointerDown={e => e.target === e.currentTarget && onClose()}>
+		<Backdrop onClose={onClose}>
 			<div className="stackup-dialog" role="dialog" aria-label="Layer stack">
 				<div className="stackup-head">
 					<div>
@@ -108,6 +109,6 @@ export function StackupDialog({ stackup, colors, onClose }: { stackup: StackupLa
 					</table>
 				</div>
 			</div>
-		</div>
+		</Backdrop>
 	)
 }

@@ -13,6 +13,8 @@ import type { BoardGeometry, GeoMesh } from "./board-geometry"
 import type { BoardWorkerApi } from "./board.worker"
 import { fitBoxesToModels } from "./model-outline"
 import { stepMesh, type StepMesh } from "./step-mesh"
+import type { StepEstimate, StepExportOptions, StepExportResult } from "./step-export/export-step"
+import type { StepQuality } from "./step-export/options"
 
 export interface Loaded3d {
 	scene: PcbScene
@@ -20,6 +22,8 @@ export interface Loaded3d {
 	geometry: BoardGeometry
 	models: Map<string, StepMesh | null> // null: the file could not be converted
 	highlight(ids: number[]): Promise<GeoMesh[]> // a selection's copper, as geometry
+	exportStep(name: string, options: StepExportOptions): Promise<StepExportResult> // the board as a STEP assembly
+	estimateStep(quality: StepQuality): Promise<StepEstimate> // what each export setting adds to the file
 }
 
 export interface Load3d {
@@ -32,34 +36,61 @@ const loads = new WeakMap<ProjectData, Load3d>()
 // secondary) has its own, so loading it doesn't end the primary's (whose highlights still need it).
 const workers = new Map<string, { remote: Remote<BoardWorkerApi>; terminate(): void }>()
 
-export function load3d(parser: Parser, data: ProjectData, readBoard: () => Promise<Uint8Array>, side: "primary" | "secondary" = "primary"): Load3d {
-	let load = loads.get(data)
-	if (load) return load
-	const progress = { done: 0, total: 0 }
+// The part that needs only the board file: opened in the 3D worker, its geometry built and its part
+// models converted. Started as soon as the project opens (startBoard3d), alongside the schematic, not
+// after its compile; load3d joins it once the project's data is in.
+interface Board3dLoad {
+	remote: Remote<BoardWorkerApi>
+	board: Promise<Board3d>
+	geometry: Promise<BoardGeometry>
+	models: Promise<Map<string, StepMesh | null>>
+	progress: { done: number; total: number }
+}
+const boards = new Map<string, { key: string; load: Board3dLoad }>() // per side
+
+export function startBoard3d(key: string, readBoard: () => Promise<Uint8Array>, side: "primary" | "secondary" = "primary"): Board3dLoad {
+	const known = boards.get(side)
+	if (known?.key === key) return known.load
 	workers.get(side)?.terminate()
 	const w = new Worker(new URL("./board.worker.ts", import.meta.url), { type: "module" })
 	const remote = wrap<BoardWorkerApi>(w)
 	workers.set(side, { remote, terminate: () => w.terminate() })
-	const done = (async (): Promise<Loaded3d | null> => {
-		const [scene, board] = await Promise.all([pcbScene(parser, data), readBoard().then(bytes => remote.open(bytes))])
-		if (!scene || !board) return null
-		progress.total = board.models.length
-		const models = new Map<string, StepMesh | null>()
-		const modelsDone = Promise.all(
-			board.models.map(async m => {
+	const progress = { done: 0, total: 0 }
+	const board = readBoard().then(bytes => remote.open(bytes))
+	const geometry = board.then(() => remote.geometry())
+	const models = board.then(async b => {
+		progress.total = b.models.length
+		const out = new Map<string, StepMesh | null>()
+		await Promise.all(
+			b.models.map(async m => {
 				const mesh = await remote
 					.stepModel(m.key)
 					.then(bytes => (bytes ? stepMesh(bytes) : null))
 					.catch(() => null)
-				models.set(m.key, mesh)
+				out.set(m.key, mesh)
 				progress.done++
 			}),
 		)
-		const geometry = await remote.geometry()
-		await modelsDone
+		return out
+	})
+	const load = { remote, board, geometry, models, progress }
+	boards.set(side, { key, load })
+	board.catch(() => boards.get(side)?.load === load && boards.delete(side))
+	return load
+}
+
+export function load3d(parser: Parser, data: ProjectData, boardKey: string, readBoard: () => Promise<Uint8Array>, side: "primary" | "secondary" = "primary"): Load3d {
+	let load = loads.get(data)
+	if (load) return load
+	const early = startBoard3d(boardKey, readBoard, side)
+	const { remote, progress } = early
+	const done = (async (): Promise<Loaded3d | null> => {
+		const [scene, board] = await Promise.all([pcbScene(parser, data), early.board])
+		if (!scene || !board) return null
+		const [geometry, models] = await Promise.all([early.geometry, early.models])
 		// The PCB view's part boxes, fitted to the models now that they are in (it redraws on view3dPrepared).
 		fitBoxesToModels(scene, board, models)
-		return { scene, board, geometry, models, highlight: ids => remote.highlight(ids) }
+		return { scene, board, geometry, models, highlight: ids => remote.highlight(ids), exportStep: (name, options) => remote.exportStep(name, options), estimateStep: quality => remote.estimateStep(quality) }
 	})()
 	load = { done, progress }
 	done.catch(() => loads.delete(data))

@@ -4,6 +4,8 @@ import type { ProjectData } from "../parse/project-data"
 import type { ProjectSource } from "../source/types"
 import type { Parser } from "../parse/parser"
 import type { FileChange } from "../diff/diff"
+import { DEFAULT_STEP_OPTIONS, type StepEstimate, type StepExportOptions, type StepQuality } from "../3d/step-export/options"
+import { SNAP_KINDS, type Measure, type MeasureMode, type SnapKind } from "../measure/measure"
 
 export type ViewTab = "sch" | "pcb" | "3d" | "bom"
 
@@ -30,6 +32,7 @@ export type Selection =
 	| { kind: "pcbObject"; id: number }
 	| { kind: "pcbNet"; name: string }
 	| { kind: "pcbComponent"; index: number }
+	| { kind: "measure"; id: number } // a ruler measurement (PCB or 3D view)
 
 // A request for the schematic view to frame some objects of a sheet instance (after a jump).
 export interface Focus {
@@ -76,6 +79,18 @@ interface AppState {
 	view3dPrepared: boolean // the 3D data is in: the 3D view may be built ahead, hidden
 	view3dProjection: Projection3d // remembered in this browser
 	view3dHidden: Set<string> // parts hidden by hand in the 3D view (partKey), for the open board
+	stepExportSeq: number // bumped when the 3D view should export the board as STEP
+	stepExportOptions: StepExportOptions // the settings of the last export asked for
+	stepExporting: boolean
+	stepDialogOpen: boolean
+	stepEstimator: ((quality: StepQuality) => Promise<StepEstimate>) | null // the open board's, once the 3D view has it
+	// The ruler (PCB and 3D views): on or off, the measurements made on the open board, what points
+	// snap to (remembered in this browser) and the kind of measurement the next one starts as.
+	measuring: boolean
+	measures: Measure[]
+	snapKinds: Set<SnapKind>
+	measureMode: MeasureMode
+	snapNote: string | null // what the ruler's cursor would snap to now, for the ruler's key
 	setScreen(screen: Screen): void
 	returnToViewer(): void
 	setCompare(compare: Compare | null): void
@@ -100,6 +115,17 @@ interface AppState {
 	setView3dPrepared(prepared: boolean): void
 	setView3dProjection(projection: Projection3d): void
 	setView3dHidden(hidden: Set<string>): void
+	requestStepExport(options: StepExportOptions): void
+	setStepDialogOpen(open: boolean): void
+	setStepExporting(exporting: boolean): void
+	setStepEstimator(estimator: ((quality: StepQuality) => Promise<StepEstimate>) | null): void
+	setMeasuring(on: boolean): void
+	addMeasure(m: Omit<Measure, "id">): number
+	updateMeasure(id: number, patch: Partial<Omit<Measure, "id">>): void
+	removeMeasure(id: number): void
+	clearMeasures(view: Measure["view"]): void
+	setSnapKinds(kinds: Set<SnapKind>): void
+	setMeasureMode(mode: MeasureMode): void
 }
 
 export type Projection3d = "perspective" | "orthographic"
@@ -114,6 +140,18 @@ function storedProjection(): Projection3d {
 }
 
 let focusSeq = 0
+let measureSeq = 0
+
+const SNAPS_KEY = "measure.snaps"
+function storedSnaps(): Set<SnapKind> {
+	try {
+		const raw = JSON.parse(localStorage.getItem(SNAPS_KEY) ?? "null") as unknown
+		if (Array.isArray(raw)) return new Set(raw.filter((k): k is SnapKind => SNAP_KINDS.includes(k as SnapKind)))
+	} catch {
+		// storage blocked or garbled: the defaults
+	}
+	return new Set(SNAP_KINDS)
+}
 
 export const useAppStore = create<AppState>((set, get) => {
 	const updateViewer = (patch: Partial<Extract<Screen, { kind: "viewer" }>>) => {
@@ -133,9 +171,19 @@ export const useAppStore = create<AppState>((set, get) => {
 		pcbStackupOpen: false,
 		view3dFocusSeq: 0,
 		view3dPanelOpen: false,
+		stepExportSeq: 0,
+		stepExportOptions: DEFAULT_STEP_OPTIONS,
+		stepExporting: false,
+		stepDialogOpen: false,
+		stepEstimator: null,
 		view3dPrepared: false,
 		view3dProjection: storedProjection(),
 		view3dHidden: new Set(),
+		measuring: false,
+		measures: [],
+		snapKinds: storedSnaps(),
+		measureMode: "distance",
+		snapNote: null,
 		setScreen(screen) {
 			const current = get().screen
 			set({ screen, parked: screen.kind === "viewer" ? null : current.kind === "viewer" ? current : get().parked })
@@ -170,13 +218,14 @@ export const useAppStore = create<AppState>((set, get) => {
 				variant: project.variants?.[0]?.name ?? null,
 				view3dPrepared: false,
 				view3dHidden: new Set(),
+				measures: [],
 			})
 		},
 		setTab: tab => updateViewer({ tab }),
 		selectSheet: id => updateViewer({ tab: "sch", activeSheetId: id }),
 		selectPcb(path) {
 			const s = get().screen
-			if (s.kind === "viewer" && s.activePcbPath !== path) set({ view3dHidden: new Set() })
+			if (s.kind === "viewer" && s.activePcbPath !== path) set({ view3dHidden: new Set(), measures: [] })
 			updateViewer({ tab: "pcb", activePcbPath: path })
 		},
 		setProjectData: projectData => set({ projectData }),
@@ -193,6 +242,10 @@ export const useAppStore = create<AppState>((set, get) => {
 			updateViewer({ tab: "3d" })
 		},
 		setView3dPanelOpen: view3dPanelOpen => set({ view3dPanelOpen }),
+		requestStepExport: stepExportOptions => set({ stepExportOptions, stepExportSeq: get().stepExportSeq + 1, stepDialogOpen: false }),
+		setStepDialogOpen: stepDialogOpen => set({ stepDialogOpen }),
+		setStepExporting: stepExporting => set({ stepExporting }),
+		setStepEstimator: stepEstimator => set({ stepEstimator }),
 		setView3dPrepared: view3dPrepared => set({ view3dPrepared }),
 		setView3dProjection(view3dProjection) {
 			try {
@@ -203,6 +256,33 @@ export const useAppStore = create<AppState>((set, get) => {
 			set({ view3dProjection })
 		},
 		setView3dHidden: view3dHidden => set({ view3dHidden }),
+		setMeasuring: measuring => set({ measuring }),
+		addMeasure(m) {
+			const id = ++measureSeq
+			set({ measures: [...get().measures, { ...m, id }] })
+			return id
+		},
+		updateMeasure(id, patch) {
+			set({ measures: get().measures.map(m => (m.id === id ? { ...m, ...patch } : m)) })
+		},
+		removeMeasure(id) {
+			const sel = get().selection
+			set({ measures: get().measures.filter(m => m.id !== id), selection: sel?.kind === "measure" && sel.id === id ? null : sel })
+		},
+		clearMeasures(view) {
+			const sel = get().selection
+			const gone = new Set(get().measures.filter(m => m.view === view).map(m => m.id))
+			set({ measures: get().measures.filter(m => !gone.has(m.id)), selection: sel?.kind === "measure" && gone.has(sel.id) ? null : sel })
+		},
+		setSnapKinds(snapKinds) {
+			try {
+				localStorage.setItem(SNAPS_KEY, JSON.stringify([...snapKinds]))
+			} catch {
+				// storage blocked: this visit only
+			}
+			set({ snapKinds })
+		},
+		setMeasureMode: measureMode => set({ measureMode }),
 		jumpTo(instanceId, objects, selection) {
 			if (selection !== undefined) set({ selection })
 			set({ focus: { instanceId, objects, seq: ++focusSeq } })

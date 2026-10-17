@@ -32,8 +32,11 @@ test("tabs switch and PCB/3D are disabled without a board", () => {
 test("sheet picker lists every hierarchy node and selects by id", () => {
 	const onSelectSheet = vi.fn()
 	render(<DocBar project={base} tab="sch" activeSheetId="Top.SchDoc" onTab={vi.fn()} onSelectSheet={onSelectSheet} />)
-	const picker = screen.getByLabelText("Sheet") as HTMLSelectElement
-	expect([...picker.options].map(o => o.text)).toEqual(["Top (Top)", "Power (U_P)"])
-	fireEvent.change(picker, { target: { value: "Top.SchDoc/U_P" } })
+	const picker = screen.getByRole("button", { name: "Sheet" })
+	expect(picker.textContent).toBe("Top (Top)")
+	fireEvent.click(picker)
+	expect(screen.getAllByRole("option").map(o => o.textContent)).toEqual(["Top (Top)", "Power (U_P)"])
+	fireEvent.click(screen.getByRole("option", { name: "Power (U_P)" }))
 	expect(onSelectSheet).toHaveBeenCalledWith("Top.SchDoc/U_P")
+	expect(screen.queryByRole("listbox")).toBeNull()
 })

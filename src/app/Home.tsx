@@ -121,12 +121,10 @@ export function Home() {
 
 			<nav className="sidebar home-sidebar" aria-label="Projects">
 				{parked && <OpenProject parked={parked} />}
-				{recents.length > 0 && !query && <RecentList recents={recents.slice(0, 5)} />}
+				{recents.length > 0 && !query && <RecentList recents={recents.slice(0, 5)} selectedKey={selected ? projectKey(selected) : null} />}
 				<div className="section-heading with-action">
 					<span>GITHUB</span>
-					<button className="icon-btn" aria-label="Refresh" onClick={projects.refresh} disabled={projects.loading}>
-						<RefreshCw size={13} className={projects.loading ? "spin" : undefined} />
-					</button>
+					<RefreshButton loading={projects.loading} onClick={projects.refresh} />
 				</div>
 				{!projects.discovery && projects.loading && (
 					<div className="sidebar-note dim">
@@ -180,6 +178,18 @@ export function Home() {
 	)
 }
 
+// The GitHub list's refresh. Its arrow turns while the list syncs and, when the sync ends, finishes the
+// turn it is on rather than snapping back upright.
+function RefreshButton({ loading, onClick }: { loading: boolean; onClick(): void }) {
+	const [turning, setTurning] = useState(loading)
+	if (loading && !turning) setTurning(true)
+	return (
+		<button className="icon-btn" aria-label="Refresh" onClick={onClick} disabled={loading}>
+			<RefreshCw size={13} className={turning ? "spin" : undefined} onAnimationIteration={() => !loading && setTurning(false)} />
+		</button>
+	)
+}
+
 // Back to the viewer left for this screen, as it was. A GitHub commit goes through its URL.
 function returnTo(parked: ViewerScreen): void {
 	const src = parked.source
@@ -217,24 +227,31 @@ function Account({ login }: { login: string }) {
 	)
 }
 
-function RecentList({ recents }: { recents: Recent[] }) {
+// As in the GitHub tree: a click shows a GitHub project's history, a double-click opens it (at the
+// commit it was last open at). A local folder has no history: a double-click opens it.
+function RecentList({ recents, selectedKey }: { recents: Recent[]; selectedKey: string | null }) {
 	return (
 		<>
 			<div className="section-heading">RECENT</div>
-			{recents.map(r => (
-				<div
-					key={recentKey(r)}
-					className="tree-row"
-					style={{ paddingLeft: 8 }}
-					role="button"
-					onClick={() => (isGitRecent(r) ? navigate({ kind: "ghCommit", ...r.github }) : openRecent(r))}
-				>
-					<span className="tree-chevron" />
-					<span className="tree-icon pcb" />
-					<span className="tree-label">{r.name}</span>
-					<span className="tree-meta dim">{isGitRecent(r) ? `${r.github.repo} @ ${r.github.sha.slice(0, 7)}` : r.handle.name}</span>
-				</div>
-			))}
+			{recents.map(r => {
+				const shown = isGitRecent(r) && selectedKey === projectKey(r.github)
+				return (
+					<div
+						key={recentKey(r)}
+						className={`tree-row${shown ? " active" : ""}`}
+						style={{ paddingLeft: 8 }}
+						role="button"
+						aria-pressed={shown}
+						onClick={() => isGitRecent(r) && navigate({ kind: "ghProject", owner: r.github.owner, repo: r.github.repo, prjPath: r.github.prjPath, branch: null })}
+						onDoubleClick={() => (isGitRecent(r) ? navigate({ kind: "ghCommit", ...r.github }) : openRecent(r))}
+					>
+						<span className="tree-chevron" />
+						<span className="tree-icon pcb" />
+						<span className="tree-label">{r.name}</span>
+						<span className="tree-meta dim">{isGitRecent(r) ? `${r.github.repo} @ ${r.github.sha.slice(0, 7)}` : r.handle.name}</span>
+					</div>
+				)
+			})}
 		</>
 	)
 }

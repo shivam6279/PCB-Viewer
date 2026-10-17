@@ -1,8 +1,12 @@
 import type { ReactNode } from "react"
+import { createPortal } from "react-dom"
+import { StepExportDialog } from "../3d/StepExportDialog"
+import { HotkeysButton } from "./Hotkeys"
+import { SheetPicker } from "./SheetPicker"
 import { flattenHierarchy } from "../model/hierarchy"
 import { stripExt } from "../source/paths"
 import type { ProjectSummary } from "../model/load-project"
-import { Layers, Layers3 } from "lucide-react"
+import { Download, Layers, Layers3, Ruler } from "lucide-react"
 import { useAppStore, type ViewTab } from "../app/store"
 
 export interface DocBarProps {
@@ -38,20 +42,15 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 	const pcbPanelOpen = useAppStore(s => s.pcbPanelOpen)
 	const stackupOpen = useAppStore(s => s.pcbStackupOpen)
 	const view3dPanelOpen = useAppStore(s => s.view3dPanelOpen)
+	const stepExporting = useAppStore(s => s.stepExporting)
+	const stepDialogOpen = useAppStore(s => s.stepDialogOpen)
+	const measuring = useAppStore(s => s.measuring)
 	const enabled = (t: ViewTab) => tabEnabled(project, t)
 
 	return (
 		<div className="docbar">
-			<div>
-				{tab === "sch" && sheets.length > 0 && (
-					<select aria-label="Sheet" value={activeSheetId ?? ""} onChange={e => onSelectSheet(e.target.value)}>
-						{sheets.map(n => (
-							<option key={n.id} value={n.id}>
-								{`${stripExt(n.fileName)} (${n.displayDesignator})`}
-							</option>
-						))}
-					</select>
-				)}
+			<div className="docbar-left">
+				{tab === "sch" && sheets.length > 0 && <SheetPicker sheets={sheets.map(n => ({ id: n.id, label: `${stripExt(n.fileName)} (${n.displayDesignator})` }))} active={activeSheetId} onPick={onSelectSheet} />}
 				{tab === "pcb" && hasPcb && (
 					<button className={`docbar-tool${pcbPanelOpen ? " on" : ""}`} onClick={() => useAppStore.getState().setPcbPanelOpen(!pcbPanelOpen)}>
 						<Layers size={16} />
@@ -70,6 +69,12 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 						Objects
 					</button>
 				)}
+				{tab === "3d" && hasPcb && (
+					<button className="docbar-tool" disabled={stepExporting} onClick={() => useAppStore.getState().setStepDialogOpen(true)}>
+						<Download size={16} />
+						{stepExporting ? "Exporting…" : "Export STEP"}
+					</button>
+				)}
 			</div>
 			<div className="tabs" role="tablist">
 				{TABS.map(t => (
@@ -78,7 +83,20 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 					</button>
 				))}
 			</div>
-			{right ?? <div />}
+			<div className="docbar-right">
+				{right}
+				{(tab === "pcb" || tab === "3d") && hasPcb && (
+					<button className={`docbar-tool${measuring ? " on" : ""}`} aria-label="Ruler" aria-pressed={measuring} aria-keyshortcuts="M" onClick={() => useAppStore.getState().setMeasuring(!measuring)}>
+						<Ruler size={16} />
+					</button>
+				)}
+				<HotkeysButton tab={tab} />
+			</div>
+			{stepDialogOpen &&
+				createPortal(
+					<StepExportDialog onExport={options => useAppStore.getState().requestStepExport(options)} onClose={() => useAppStore.getState().setStepDialogOpen(false)} />,
+					document.body,
+				)}
 		</div>
 	)
 }

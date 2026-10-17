@@ -6,6 +6,7 @@ import { channelOf, flattenHierarchy, type HierarchyNode } from "../model/hierar
 import type { ProjectSummary } from "../model/load-project"
 import type { Parser } from "../parse/parser"
 import { PcbView } from "../pcb/PcbView"
+import { boardKey } from "../3d/board-key"
 import { pcbScene } from "../pcb/use-scene"
 import { loadSheet, SchematicView } from "../sch/SchematicView"
 import type { ProjectSource } from "../source/types"
@@ -94,7 +95,7 @@ export function DiffArea({ tab, activeSheetId, activePcbPath, a, b, files }: {
 	const board = (s: DiffSide, path: string | undefined) =>
 		path ? (
 			<Suspense fallback={<div className="view-message">Loading board…</div>}>
-				<View3d parser={s.parser} active readBoard={() => s.source.read(path)} variants={s.project.variants} />
+				<View3d parser={s.parser} active board={boardKey(s.source, path)} readBoard={() => s.source.read(path)} variants={s.project.variants} />
 			</Suspense>
 		) : (
 			missing("No board in this commit")

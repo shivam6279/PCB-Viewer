@@ -266,7 +266,7 @@ test("Orthographic keeps parallel edges parallel, and zoom and picking still fol
 	expect(errors).toEqual([])
 })
 
-test("F turns the board over about its centre, eased, and F again turns it back", async ({ page }) => {
+test("F turns the board over about the point under the cursor, eased, and F again turns it back", async ({ page }) => {
 	await openCubli3d(page)
 	// Panned off the centre and turned a little, so the turn's axis and centre both show.
 	const start = await page.evaluate(() => {
@@ -278,6 +278,12 @@ test("F turns the board over about its centre, eased, and F again turns it back"
 		const w = e.getView()
 		return { q: w.quaternion.toArray() as [number, number, number, number], offset: [w.offset.x, w.offset.y], distance: w.distance }
 	})
+	// The cursor off the middle of the view, over the board.
+	const box = (await page.locator(".view3d-canvas").boundingBox())!
+	const cursor = { x: box.x + box.width * 0.3, y: box.y + box.height * 0.6 }
+	await page.mouse.move(cursor.x, cursor.y)
+	// The turn's pivot: the board's mid-plane under the cursor.
+	const pivot: number[] = await page.evaluate(() => (document.querySelector(".view3d-canvas") as any).__view3d.flipPivot().toArray())
 	await shot(page, "3d-flip-before")
 	const view = () =>
 		page.evaluate(() => {
@@ -306,10 +312,16 @@ test("F turns the board over about its centre, eased, and F again turns it back"
 	expect(angles.some(a => a > 20 && a < 160)).toBe(true) // eased, not a jump
 	expect(angles.at(-1)).toBeCloseTo(180, 1)
 	const after = await view()
-	// Same place relative to the centre, so the board centre stays where it was on screen.
-	expect(after.offset[0]).toBeCloseTo(start.offset[0], 6)
-	expect(after.offset[1]).toBeCloseTo(start.offset[1], 6)
-	expect(after.distance).toBeCloseTo(start.distance, 6)
+	// The spot under the cursor stays under it: the pivot projects to the same screen point.
+	const pivotOnScreen = await page.evaluate(p => {
+		const e = (document.querySelector(".view3d-canvas") as any).__view3d
+		e.applyView()
+		const v = new e.camera.position.constructor(...p).project(e.camera)
+		const r = e.canvas.getBoundingClientRect()
+		return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height }
+	}, pivot)
+	expect(pivotOnScreen.x).toBeCloseTo(cursor.x, 1)
+	expect(pivotOnScreen.y).toBeCloseTo(cursor.y, 1)
 	// Half a turn about the screen's vertical laid flat on the board: top and bottom swap (every camera
 	// axis's height above the board reverses) and nothing else.
 	const turn = await page.evaluate(
@@ -512,4 +524,46 @@ test("the view cube drags like the board, and its arrows turn about one view axi
 		expect(t.angle).toBeLessThan(80)
 		expect(t.axis).toEqual(axis)
 	}
+})
+
+test("solder joints are off at first; Solder Joints in the Objects panel builds and shows them", async ({ page }) => {
+	await openCubli3d(page)
+	const solder = () => page.evaluate(() => { const e = (document.querySelector(".view3d-canvas") as any).__view3d; return { built: e.hasSolder, joints: e.solder.children.length, shown: e.solder.visible } })
+	expect(await solder()).toMatchObject({ built: false, joints: 0 })
+	const panel = page.getByRole("complementary", { name: "Objects", exact: true })
+	await page.locator(".docbar-tool", { hasText: "Objects" }).click()
+	await panel.locator('[data-kind="solder"]').hover()
+	await panel.getByRole("button", { name: "Show Solder Joints" }).click()
+	await expect.poll(async () => (await solder()).joints, { timeout: 30_000 }).toBeGreaterThan(100)
+	expect((await solder()).shown).toBe(true)
+	await panel.getByRole("button", { name: "Hide Solder Joints" }).click()
+	expect((await solder()).shown).toBe(false)
+})
+
+test("a bottom-side part's 3D button frames it from below", async ({ page }) => {
+	await openCubli3d(page)
+	// A bottom-side part, picked with the board turned over.
+	const designator: string = await page.evaluate(() => {
+		const e = (document.querySelector(".view3d-canvas") as any).__view3d
+		const parts = e.scene.components.filter((c: any) => c.side === "bottom" && /^U/.test(c.designator))
+		return parts.sort((a: any, b: any) => (b.outline[2] - b.outline[0]) * (b.outline[3] - b.outline[1]) - (a.outline[2] - a.outline[0]) * (a.outline[3] - a.outline[1]))[0].designator
+	})
+	const panel = page.getByRole("complementary", { name: "Objects", exact: true })
+	await page.locator(".docbar-tool", { hasText: "Objects" }).click()
+	await panel.getByRole("button", { name: "Bottom", exact: true }).click()
+	await page.waitForTimeout(300)
+	const at = await clientOfComponent(page, designator)
+	await page.mouse.click(at.x, at.y)
+	await expect(page.locator(".inspector .inspector-head .title")).toHaveText(designator)
+	// The view cube moves out from under the inspector, so it can still be reached.
+	const cube = (await page.locator(".view-cube").boundingBox())!
+	const inspector = (await page.locator(".inspector").boundingBox())!
+	expect(cube.x + cube.width).toBeLessThanOrEqual(inspector.x)
+	await expect(page.locator(".view-cube-face[data-side='front']").first()).toBeVisible()
+	// Back on the top, then asked to show it in 3D: it is framed from below.
+	await panel.getByRole("button", { name: "Top", exact: true }).click()
+	await page.locator(".inspector-views").getByRole("button", { name: "3D" }).click()
+	const facing = () => page.evaluate(() => { const e = (document.querySelector(".view3d-canvas") as any).__view3d; return new e.camera.position.constructor(0, 0, 1).applyQuaternion(e.getView().quaternion).z })
+	await expect.poll(facing).toBeLessThan(-0.99)
+	await shot(page, "3d-bottom-part")
 })

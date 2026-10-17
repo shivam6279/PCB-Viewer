@@ -69,25 +69,26 @@ export class GitHub {
 
 	private readonly repoInfos = new Map<string, Promise<Repo>>()
 
-	// A repo's facts (its default branch) for this visit: asked once, not on every screen.
-	repoInfo(r: RepoRef): Promise<Repo> {
+	// A repo's facts (its default branch) for this visit: asked once, not on every screen. fresh (the
+	// home screen's refresh): asked of GitHub again, past the site's published index.
+	repoInfo(r: RepoRef, fresh = false): Promise<Repo> {
 		const key = `${r.owner}/${r.repo}`
-		let p = this.repoInfos.get(key)
+		let p = fresh ? undefined : this.repoInfos.get(key)
 		if (!p) {
-			p = this.fetchRepoInfo(r)
+			p = this.fetchRepoInfo(r, fresh)
 			p.catch(() => this.repoInfos.delete(key))
 			this.repoInfos.set(key, p)
 		}
 		return p
 	}
 
-	private async fetchRepoInfo(r: RepoRef): Promise<Repo> {
-		const idx = await this.index?.repo(r)
+	private async fetchRepoInfo(r: RepoRef, fresh: boolean): Promise<Repo> {
+		const idx = fresh ? null : await this.index?.repo(r)
 		if (idx) {
 			// The default branch's head stands in for the push time: it changes exactly when there is news.
 			return { owner: r.owner, repo: r.repo, defaultBranch: idx.meta.defaultBranch, private: false, pushedAt: idx.meta.branches[idx.meta.defaultBranch] ?? idx.meta.generatedAt }
 		}
-		const raw = await this.client.json<{ name: string; owner: { login: string }; default_branch: string; private: boolean; pushed_at: string }>(repoPath(r))
+		const raw = await this.client.json<{ name: string; owner: { login: string }; default_branch: string; private: boolean; pushed_at: string }>(repoPath(r), { fresh })
 		return { owner: raw.owner.login, repo: raw.name, defaultBranch: raw.default_branch, private: raw.private, pushedAt: raw.pushed_at }
 	}
 
@@ -164,14 +165,14 @@ export class GitHub {
 
 	// The files at a branch's head, in one request (a branch moves, so this is not cached by sha; the
 	// caller caches what it derives from it by the repo's push time).
-	async treeAtBranch(r: RepoRef, branch: string): Promise<string[]> {
-		const idx = await this.index?.repo(r)
+	async treeAtBranch(r: RepoRef, branch: string, fresh = false): Promise<string[]> {
+		const idx = fresh ? null : await this.index?.repo(r)
 		const head = idx?.meta.branches[branch]
 		if (head) {
 			const files = await this.index!.tree(r, head)
 			if (files) return [...files.keys()]
 		}
-		const t = await this.client.json<RawTree>(`${repoPath(r)}/git/trees/${enc(branch)}?recursive=1`)
+		const t = await this.client.json<RawTree>(`${repoPath(r)}/git/trees/${enc(branch)}?recursive=1`, { fresh })
 		return t.tree.filter(e => e.type === "blob").map(e => e.path)
 	}
 

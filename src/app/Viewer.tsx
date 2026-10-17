@@ -4,6 +4,7 @@ import { TopBar } from "../shell/TopBar"
 import { ProjectTree } from "../shell/ProjectTree"
 import { DocBar, TAB_ORDER, tabEnabled } from "../shell/DocBar"
 import { loadView3d, ViewArea } from "../shell/ViewArea"
+import { boardKey } from "../3d/board-key"
 import { Inspector } from "../shell/Inspector"
 import { workerParser } from "../parse/worker-parser"
 import { loadProjectData } from "./load-project-data"
@@ -55,21 +56,23 @@ export function Viewer() {
 	const onSecondary = mode === "secondary" && secondary !== null
 	const data = onSecondary ? (secondary.data.status === "ready" ? secondary.data.data : null) : primaryData
 
-	// The 3D view (code, board geometry, part models) loads in the background once the project is in,
-	// so opening the 3D tab later is quick.
+	// The 3D view loads in the background, so opening the 3D tab is quick: what needs only the board
+	// file (its geometry, its part models) from the moment the project opens, alongside the schematic;
+	// the rest once the project's data is in. Then the view is built, hidden (view3dPrepared).
 	const boardPath = screen.kind === "viewer" ? screen.activePcbPath : null
 	useEffect(() => {
+		if (!source || !boardPath || !project?.documents.some(d => d.path === boardPath && d.exists)) return
+		void loadView3d()
+		void import("../3d/prefetch").then(m => m.startBoard3d(boardKey(source, boardPath), () => source.read(boardPath)))
+	}, [source, boardPath, project])
+	useEffect(() => {
 		if (!primaryData?.pcb || !source || !boardPath) return
-		const timer = setTimeout(() => {
-			void loadView3d()
-			void import("../3d/prefetch").then(m =>
-				m
-					.load3d(parser, primaryData, () => source.read(boardPath))
-					.done.then(r => r && useAppStore.getState().setView3dPrepared(true))
-					.catch(() => {}),
-			)
-		}, 200)
-		return () => clearTimeout(timer)
+		void import("../3d/prefetch").then(m =>
+			m
+				.load3d(parser, primaryData, boardKey(source, boardPath), () => source.read(boardPath))
+				.done.then(r => r && useAppStore.getState().setView3dPrepared(true))
+				.catch(() => {}),
+		)
 	}, [primaryData, parser, source, boardPath])
 
 	const nets = useMemo(

@@ -775,3 +775,40 @@ test("a part is hovered and picked only while the current layer is on its side, 
 	await page.mouse.click(part.at.x, part.at.y)
 	await expect(panel).toBeVisible()
 })
+
+test("a bottom-side part's PCB button makes the bottom layer current", async ({ page }) => {
+	await page.goto("/")
+	await page.getByTestId("zip-input").setInputFiles({ name: "Camera.zip", mimeType: "application/zip", buffer: zipTopLevel(join(CORPUS, "PnP/Camera"), "Camera") })
+	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
+	await page.getByRole("tab", { name: "PCB" }).click()
+	await expect(page.locator('.pcb-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
+	const current = () => page.evaluate(() => (document.querySelector(".pcb-canvas") as any).__pcb.layers().current as string)
+	const makeCurrent = async (layer: string) => {
+		for (let k = 0; k < 60 && (await current()) !== layer; k++) await page.keyboard.press("+")
+		expect(await current()).toBe(layer)
+	}
+	await page.mouse.move(800, 450)
+	// MP1, a bottom-side part, picked with Bottom current.
+	await makeCurrent("BOTTOM")
+	const at = await page.evaluate(() => {
+		const pcb = (document.querySelector(".pcb-canvas") as any).__pcb
+		const i = pcb.scene.components.findIndex((c: any) => c.designator === "MP1")
+		const c = pcb.scene.components[i]
+		const [x0, y0, x1, y1] = c.outline
+		pcb.view((x0 + x1) / 2, (y0 + y1) / 2, ((document.querySelector(".pcb-canvas") as HTMLCanvasElement).height * 0.6) / (y1 - y0))
+		const b = c.box, mx = (b[0] + b[4]) / 2, my = (b[1] + b[5]) / 2
+		for (let f = 0.9; f > 0.1; f -= 0.02) {
+			const hit = pcb.pick(mx + (b[0] - mx) * f, my + (b[1] - my) * f)
+			if (hit?.kind === "component" && hit.index === i) return pcb.toClient(mx + (b[0] - mx) * f, my + (b[1] - my) * f)
+		}
+		throw new Error("no point on MP1 picks the part")
+	})
+	await page.mouse.click(at.x, at.y)
+	const panel = page.getByRole("complementary", { name: "Component properties" })
+	await expect(panel.locator(".inspector-head .title")).toHaveText("MP1")
+	// Back on Top, then asked to show it on the PCB: Bottom is current again.
+	await page.mouse.move(800, 450)
+	await makeCurrent("TOP")
+	await panel.getByRole("button", { name: "PCB" }).click()
+	await expect.poll(current).toBe("BOTTOM")
+})

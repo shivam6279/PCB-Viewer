@@ -12,6 +12,7 @@ import { netSelection, partKey, pcbComponentIndex } from "../pcb/selection"
 import { usePcbScene } from "../pcb/use-scene"
 import { instanceLabel } from "../sch/interaction"
 import { footprintSvg } from "../pcb/footprint-svg"
+import { formatMm, isCircle, measured, MEASURE_MODES, MODE_LABELS, MODE_PREFIX, radiusOf, SNAP_LABELS, type MeasurePoint } from "../measure/measure"
 
 const MM = 0.0254
 
@@ -49,6 +50,8 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 			const o = scene?.objects[selection.id]
 			return o && scene ? <ObjectPanel {...views} scene={scene} pcb={data.pcb} object={o} onClose={close} /> : null
 		}
+		case "measure":
+			return <MeasurePanel scene={scene} id={selection.id} onClose={close} />
 		case "pcbComponent": {
 			const c = scene?.components[selection.index]
 			if (!c || !scene) return null
@@ -261,6 +264,96 @@ function NetLink({ name, compiled }: { name: string; compiled: CompiledProject }
 		<button className="link-button" onClick={() => useAppStore.getState().showOnPcb(netSelection(name, compiled))}>
 			{name}
 		</button>
+	)
+}
+
+// A ruler measurement: its value (and what it measures, changeable), the spans along each axis, and
+// both points with what they snapped to. Coordinates from the board's origin.
+function MeasurePanel({ scene, id, onClose }: { scene: PcbScene | null; id: number; onClose(): void }) {
+	const m = useAppStore(s => s.measures.find(x => x.id === id))
+	if (!m) return null
+	const store = useAppStore.getState()
+	const is3d = m.view === "3d"
+	const dx = m.b.x - m.a.x, dy = m.b.y - m.a.y, dz = m.b.z - m.a.z
+	const withMils = (mils: number) => (
+		<>
+			{formatMm(mils)} <span className="dim">({mils.toFixed(1)} mil)</span>
+		</>
+	)
+	const angle = (Math.atan2(dy, dx) * 180) / Math.PI
+	const circle = isCircle(m.mode)
+	// A two-point measurement can be any of the two-point kinds; a circle, radius or diameter.
+	const modes = MEASURE_MODES.filter(k => isCircle(k) === circle)
+	return (
+		<aside className="inspector" aria-label="Measurement">
+			<Head title="Measurement" onClose={onClose} views={[]} active="" />
+			<div className="measure-panel-value">
+				{MODE_PREFIX[m.mode]}
+				{formatMm(measured(m))}
+			</div>
+			<div className="measure-modes measure-panel-modes" role="radiogroup" aria-label="Measure">
+				{modes.map(mode => (
+					<button key={mode} role="radio" aria-checked={m.mode === mode} onClick={() => store.updateMeasure(m.id, { mode })}>
+						{MODE_LABELS[mode]}
+					</button>
+				))}
+			</div>
+			{circle ? (
+				<>
+					<dl className="inspector-props">
+						<dt>Radius</dt>
+						<dd>{withMils(radiusOf(m))}</dd>
+						<dt>Diameter</dt>
+						<dd>{withMils(2 * radiusOf(m))}</dd>
+					</dl>
+					<MeasurePointSection title="Centre" point={m.a} scene={scene} is3d={is3d} />
+				</>
+			) : (
+				<>
+			<dl className="inspector-props">
+				<dt>Distance</dt>
+				<dd>{withMils(Math.hypot(dx, dy, dz))}</dd>
+				<dt>ΔX</dt>
+				<dd>{withMils(dx)}</dd>
+				<dt>ΔY</dt>
+				<dd>{withMils(dy)}</dd>
+				{is3d && (
+					<>
+						<dt>ΔZ</dt>
+						<dd>{withMils(dz)}</dd>
+					</>
+				)}
+				<dt>Angle</dt>
+				<dd>{angle.toFixed(2)}°</dd>
+			</dl>
+			<MeasurePointSection title="Start point" point={m.a} scene={scene} is3d={is3d} />
+			<MeasurePointSection title="End point" point={m.b} scene={scene} is3d={is3d} />
+				</>
+			)}
+			<div className="measure-panel-actions">
+				<button className="btn ghost" onClick={() => store.removeMeasure(m.id)}>
+					Delete
+				</button>
+				<button className="btn ghost" onClick={() => store.clearMeasures(m.view)}>
+					Clear all
+				</button>
+			</div>
+		</aside>
+	)
+}
+
+function MeasurePointSection({ title, point, scene, is3d }: { title: string; point: MeasurePoint; scene: PcbScene | null; is3d: boolean }) {
+	const [ox, oy] = scene?.origin ?? [0, 0]
+	return (
+		<Section title={title}>
+			<div className="inspector-row">
+				X: {((point.x - ox) * MM).toFixed(3)}mm; Y: {((point.y - oy) * MM).toFixed(3)}mm
+			</div>
+			{is3d && <div className="inspector-row">Z: {(point.z * MM).toFixed(3)}mm from the top face</div>}
+			<div className="inspector-row">
+				<span className="grow dim">{point.snap ? `${SNAP_LABELS[point.snap].replace(/s$/, "")} · ${point.on ?? ""}` : "Free (not snapped)"}</span>
+			</div>
+		</Section>
 	)
 }
 

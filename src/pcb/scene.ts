@@ -66,11 +66,21 @@ export interface PcbSceneComponent {
 	outline: [number, number, number, number] // the box's axis-aligned extent
 }
 
+// A closed outline as it is drawn: each vertex, and the arc (if any) from it to the next one.
+export interface ContourSeg {
+	x: number
+	y: number
+	arc?: { cx: number; cy: number; r: number; ccw: boolean }
+}
+
 export interface PcbScene {
 	origin: [number, number]
 	bounds: [number, number, number, number]
 	outline: number[] // board shape ring
 	cutouts: number[][]
+	// The same as drawn, its arcs kept (the STEP export makes them true arcs, not chords).
+	outlinePath?: ContourSeg[]
+	cutoutPaths?: ContourSeg[][]
 	layers: PcbLayer[] // every layer that has something on it, plus the whole copper stack
 	objects: PcbObject[]
 	components: PcbSceneComponent[]
@@ -207,13 +217,15 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 	const outlinePoints: { x: number; y: number }[] = d.boardGeometry?.outline?.points ?? []
 	const outline = outlinePoints.flatMap(p => [p.x, p.y])
 	const cutouts: number[][] = (d.boardGeometry?.cutouts ?? []).map((c: any) => (c.outline?.points ?? []).flatMap((p: any) => [p.x, p.y]))
+	const outlinePath = contourPath(d.boardGeometry?.outline)
+	const cutoutPaths = (d.boardGeometry?.cutouts ?? []).map((c: any) => contourPath(c.outline))
 	let bounds = boxOfRing(outline)
 	if (!Number.isFinite(bounds[0])) bounds = objects.reduce((b, o) => unionBox(b, o.bbox), [Infinity, Infinity, -Infinity, -Infinity] as PcbObject["bbox"])
 
 	for (const c of components) {
 		fitPartBox(c, objects)
 	}
-	return { origin, bounds, outline, cutouts, layers: buildLayers(layerKeys, boardItems), objects, components }
+	return { origin, bounds, outline, cutouts, outlinePath, cutoutPaths, layers: buildLayers(layerKeys, boardItems), objects, components }
 
 	function addPad(p: any, custom?: Prim[]) {
 		const x = mils(p.get("X")), y = mils(p.get("Y"))
@@ -415,6 +427,29 @@ function regionPrim(r: any): Prim | null {
 
 // Altium stroke-font text: lines of the given stroke width, anchored at its bottom-left,
 // rotated CCW about the anchor, mirrored for bottom-side text.
+// A contour's vertices as drawn: an arc vertex's arc runs from it to the next vertex, counter-clockwise
+// when the vertex is at the arc's start angle, clockwise when at its end. A closing vertex repeating the
+// first is dropped.
+function contourPath(contour: any): ContourSeg[] {
+	const vertices: any[] = contour?.vertices ?? []
+	const out: ContourSeg[] = []
+	for (const v of vertices) {
+		const seg: ContourSeg = { x: v.position.x, y: v.position.y }
+		const a = v.arc
+		if (a && a.radiusMils > 0) {
+			const at = (deg: number) => [a.center.x + a.radiusMils * Math.cos((deg * Math.PI) / 180), a.center.y + a.radiusMils * Math.sin((deg * Math.PI) / 180)]
+			const [sx, sy] = at(a.startAngleDegrees)
+			const [ex, ey] = at(a.endAngleDegrees)
+			const ccw = Math.hypot(sx! - seg.x, sy! - seg.y) <= Math.hypot(ex! - seg.x, ey! - seg.y)
+			seg.arc = { cx: a.center.x, cy: a.center.y, r: a.radiusMils, ccw }
+		}
+		out.push(seg)
+	}
+	const first = out[0], last = out[out.length - 1]
+	if (out.length > 1 && first && last && Math.hypot(first.x - last.x, first.y - last.y) < 1e-3 && !last.arc) out.pop()
+	return out
+}
+
 export function strokeText(text: string, x: number, y: number, height: number, width: number, rot: number, mirror: boolean): Prim[] {
 	const cap = height * 0.82
 	const pen = Math.max(width, height * 0.05)

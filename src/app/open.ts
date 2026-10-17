@@ -27,6 +27,10 @@ export async function openSource(source: ProjectSource, handle: FileSystemDirect
 	}
 }
 
+// Opens can overlap (a recent double-clicked opens it twice): only the latest lands. An earlier one
+// landing after it would show the project afresh, back on its first tab.
+let openSeq = 0
+
 export async function openProject(
 	source: ProjectSource,
 	handle: FileSystemDirectoryHandle | null,
@@ -34,14 +38,16 @@ export async function openProject(
 	parser: Parser = workerParser(),
 ): Promise<void> {
 	const { setScreen, showProject } = useAppStore.getState()
+	const seq = ++openSeq
 	try {
 		setScreen({ kind: "loading", label: `Opening ${prjPath ? basename(prjPath) : source.name}…` })
 		const project = await loadProject(source, prjPath, parser)
+		if (seq !== openSeq) return
 		useAppStore.getState().setCompare(null) // comparing is for GitHub commits
 		showProject(source, project)
 		if (handle) await addRecent({ name: project.name, prjPath, handle, openedAt: Date.now() }).catch(() => {})
 	} catch (e) {
-		setScreen({ kind: "start", error: e instanceof Error ? e.message : String(e) })
+		if (seq === openSeq) setScreen({ kind: "start", error: e instanceof Error ? e.message : String(e) })
 	}
 }
 

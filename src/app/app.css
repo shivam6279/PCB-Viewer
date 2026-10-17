@@ -195,6 +195,8 @@ button { font: inherit; color: inherit; }
 /* The view cube: see-through, turned with the board; a face click turns the view to it, a drag turns
    the board; arrows (on hover) turn about one view axis. The faces are depth-sorted in 3D (preserve-3d). */
 .view-cube { position: absolute; z-index: 3; top: 8px; right: 8px; width: calc(var(--cube) * 2.4); height: calc(var(--cube) * 2.4); user-select: none; touch-action: none; }
+/* The inspector (300px, over the view's right side) pushes the cube left so it stays reachable. */
+.view-area:has(~ .inspector) .view-cube { right: 308px; }
 .view-cube-box { position: absolute; inset: calc(var(--cube) * 0.45); transform-style: preserve-3d; cursor: grab; }
 .view-cube.dragging .view-cube-box { cursor: grabbing; }
 .view-cube-face { position: absolute; left: 50%; top: 50%; width: var(--cube); height: var(--cube); margin: calc(var(--cube) / -2) 0 0 calc(var(--cube) / -2); padding: 0; border: 1px solid rgba(255, 255, 255, 0.55); border-radius: 2px; background: rgba(48, 52, 60, calc(0.22 + 0.3 * var(--facing, 1))); color: #f2f4f7; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); font: inherit; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; cursor: inherit; transition: background-color 0.12s ease; }
@@ -228,6 +230,25 @@ button { font: inherit; color: inherit; }
 .inspector-action:hover { border-color: #5a5a5a; }
 .docbar-tool { display: inline-flex; align-items: center; gap: 6px; height: 100%; background: none; border: 0; padding: 0 10px; cursor: pointer; color: var(--text); font: inherit; }
 .docbar-tool.on { background: var(--bg-selected); }
+.docbar-left { display: flex; align-items: center; height: 100%; min-width: 0; }
+/* The gear's hotkey list, in a window (the stackup dialog's frame) */
+.docbar-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; height: 100%; }
+.stackup-dialog.hotkeys-dialog { width: min(480px, 100%); }
+.hotkeys-dialog .stackup-head .grow { flex: 1; }
+.hotkeys-list { display: grid; gap: 7px; margin: 0; padding: 14px 18px 16px; overflow: auto; }
+.hotkeys-row { display: grid; grid-template-columns: 9.5em 1fr; gap: 14px; }
+.hotkeys-row dt { color: var(--text); font-weight: 600; white-space: nowrap; }
+.hotkeys-row dd { margin: 0; color: var(--text-dim); }
+/* The schematic's sheet picker: name and arrow one button; the list's rows rounded */
+.sheet-picker { position: relative; height: 100%; }
+.sheet-picker-button { display: inline-flex; align-items: center; gap: 6px; height: 100%; max-width: 380px; padding: 0 10px; background: none; border: 0; color: var(--text); font: inherit; cursor: pointer; }
+.sheet-picker-button:hover, .sheet-picker-button.on { background: var(--bg-raised); }
+.sheet-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-picker-button svg { flex: none; color: var(--text-dim); }
+.sheet-picker-list { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 100%; max-height: 60vh; overflow: auto; padding: 4px; background: var(--bg-chrome); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); font-size: var(--font-size-ui); }
+.sheet-picker-row { padding: 5px 10px; border-radius: 4px; white-space: nowrap; cursor: pointer; }
+.sheet-picker-row.current { font-weight: 600; }
+.sheet-picker-row.hover { background: var(--accent); color: #fff; }
 .pcb-layers { position: absolute; z-index: 4; top: 0; left: 0; bottom: 0; width: 248px; display: flex; flex-direction: column; background: var(--bg-chrome); color: var(--text); border-right: 1px solid var(--border); font-size: var(--font-size-ui); cursor: default; }
 .pcb-layers button { font: inherit; color: inherit; }
 .pcb-layers-tabs { display: flex; align-items: center; gap: 4px; padding: 8px 10px 4px; }
@@ -425,6 +446,28 @@ button.commit-row:hover { background: var(--bg-raised); }
 .bom-designator:disabled { color: inherit; cursor: default; }
 .bom-empty { padding: 24px; color: var(--text-dim); text-align: center; }
 
+/* STEP export settings (in the layer stack dialog's frame) */
+.stackup-dialog.step-dialog { width: min(680px, 100%); grid-template-rows: auto auto auto; }
+.step-dialog .stackup-head .grow { flex: 1; }
+.step-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; padding: 14px 18px; align-items: start; }
+.step-preview-frame { background: #cccccc; border-radius: 4px; overflow: hidden; align-self: stretch; min-height: 240px; position: relative; }
+.step-preview { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; transition: opacity 0.15s ease; }
+.step-preview-frame[aria-busy="true"] .step-preview { opacity: 0.55; }
+.step-options { display: grid; gap: 2px; min-width: 210px; }
+.step-option { display: flex; align-items: center; gap: 10px; padding: 5px 0; cursor: pointer; }
+.step-option input { margin: 0; accent-color: var(--accent); }
+.step-option.indent { padding-left: 24px; }
+.step-option[aria-disabled="true"] { opacity: 0.45; cursor: default; }
+.step-option-label { font-weight: 600; }
+.step-quality { display: grid; gap: 6px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+.step-quality input { width: 100%; margin: 0; accent-color: var(--accent); }
+.step-quality-stops { display: flex; justify-content: space-between; color: var(--text-dim); font-size: var(--font-size-small); }
+.step-quality-stops .on { color: var(--text); }
+.step-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.step-actions .btn { color: var(--text); font: inherit; }
+.step-size { flex: 1; color: var(--text-dim); }
+@media (max-width: 600px) { .step-body { grid-template-columns: 1fr; } }
+
 /* PCB layer stack dialog */
 .stackup-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.45); }
 .stackup-dialog { display: grid; grid-template-rows: auto 1fr; max-height: 100%; width: min(920px, 100%); background: var(--bg-chrome); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); font-size: var(--font-size-ui); overflow: hidden; }
@@ -472,7 +515,9 @@ button.commit-row:hover { background: var(--bg-raised); }
 .pcb-modes button[aria-checked="true"] { background: var(--bg-selected); box-shadow: inset 2px 0 0 var(--accent); }
 
 /* PCB layer legend, over the board */
-.pcb-legend { position: absolute; z-index: 3; max-height: calc(100% - 24px); display: flex; flex-direction: column; background: rgba(28, 28, 28, 0.72); border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3); backdrop-filter: blur(6px); color: var(--text); font-size: 12px; user-select: none; }
+/* Panels floating over a board view (the PCB view's Layers card, the ruler's bar and key): one look. */
+:root { --float-bg: rgba(28, 28, 28, 0.72); --float-border: rgba(255, 255, 255, 0.22); --float-rule: rgba(255, 255, 255, 0.12); --float-radius: 6px; --float-shadow: 0 4px 16px rgba(0, 0, 0, 0.3); --float-blur: blur(6px); }
+.pcb-legend { position: absolute; z-index: 3; max-height: calc(100% - 24px); display: flex; flex-direction: column; background: var(--float-bg); border: 1px solid var(--float-border); border-radius: var(--float-radius); box-shadow: var(--float-shadow); backdrop-filter: var(--float-blur); color: var(--text); font-size: 12px; user-select: none; }
 .pcb-legend.sized { max-height: none; }
 .pcb-legend.folded { width: auto !important; }
 .pcb-legend-head { cursor: move; }
@@ -482,7 +527,7 @@ button.commit-row:hover { background: var(--bg-raised); }
 .pcb-legend-resize.bottom { left: 0; right: 8px; bottom: -4px; height: 8px; cursor: ns-resize; }
 .pcb-legend-resize.corner { right: -4px; bottom: -4px; width: 14px; height: 14px; cursor: nwse-resize; }
 .pcb-legend button { font: inherit; color: inherit; }
-.pcb-legend-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.pcb-legend-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; border-bottom: 1px solid var(--float-rule); }
 .pcb-legend-head .grow { flex: 1; }
 .pcb-legend-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 10px; background: rgba(255, 255, 255, 0.06); cursor: pointer; white-space: nowrap; }
 .pcb-legend-chip:hover { background: rgba(255, 255, 255, 0.14); }
@@ -503,6 +548,47 @@ button.commit-row:hover { background: var(--bg-raised); }
 .pcb-legend-keys { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 6px 10px; border-top: 1px solid rgba(255, 255, 255, 0.12); color: var(--text-dim); font-size: 11px; }
 .pcb-mirror-badge { position: absolute; z-index: 3; top: 12px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 14px; border: 1px solid rgba(255, 200, 80, 0.6); background: rgba(40, 32, 10, 0.8); color: #ffd780; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; backdrop-filter: blur(4px); }
 .pcb-mirror-badge:disabled { cursor: default; }
+.view3d-layer-badge { position: absolute; z-index: 3; bottom: 14px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 14px; background: rgba(40, 40, 40, 0.82); color: #eee; font-size: 12px; font-weight: 600; pointer-events: none; backdrop-filter: blur(4px); white-space: nowrap; }
+.view3d-layer-badge i { width: 10px; height: 10px; border-radius: 2px; }
+.view3d-layer-badge.raised { bottom: 62px; }
+/* The ruler: its bar along the bottom of the PCB / 3D view, and the canvas it draws on in 3D. */
+.measure-bar { position: absolute; z-index: 5; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 5px 6px; background: var(--float-bg); border: 1px solid var(--float-border); border-radius: var(--float-radius); box-shadow: var(--float-shadow); backdrop-filter: var(--float-blur); color: var(--text); font-size: 12px; white-space: nowrap; user-select: none; max-width: calc(100% - 32px); overflow-x: auto; }
+.measure-modes { display: flex; gap: 2px; padding: 2px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); }
+.measure-modes button { border: 0; background: none; color: var(--text-dim); font: inherit; font-weight: 600; padding: 3px 10px; border-radius: 3px; cursor: pointer; }
+.measure-modes button:hover { color: var(--text); }
+.measure-modes button[aria-checked="true"] { background: var(--accent); color: #fff; }
+.measure-mode { display: contents; }
+.measure-modes-gap { width: 1px; margin: 3px 3px; background: var(--float-rule); }
+.measure-key { color: var(--text-dim); font-size: 11px; padding: 0 2px; }
+.measure-label { color: var(--text-dim); padding-left: 2px; }
+.measure-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--float-rule); }
+.measure-chip { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--float-border); border-radius: 10px; background: rgba(255, 255, 255, 0.06); color: var(--text); font: inherit; cursor: pointer; }
+.measure-chip:hover:not(:disabled) { background: rgba(255, 255, 255, 0.14); }
+.measure-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.measure-chip:disabled { opacity: 0.45; cursor: default; }
+.measure-close { display: grid; place-items: center; padding: 2px; border: 0; background: none; color: var(--text-dim); cursor: pointer; }
+.measure-close:hover { color: var(--text); }
+.measure-legend { position: absolute; z-index: 5; left: 12px; bottom: 62px; min-width: 160px; background: var(--float-bg); border: 1px solid var(--float-border); border-radius: var(--float-radius); box-shadow: var(--float-shadow); backdrop-filter: var(--float-blur); color: var(--text); font-size: 12px; user-select: none; }
+.measure-legend-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; padding: 7px 8px; border: 0; border-bottom: 1px solid var(--float-rule); background: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; text-align: left; }
+.measure-legend-head svg { color: var(--text-dim); }
+.measure-legend-now { padding: 6px 8px; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+.measure-legend-body { border-top: 1px solid var(--float-rule);  display: flex; gap: 14px; padding: 4px 8px 6px; }
+.measure-legend-col { display: grid; gap: 1px; align-content: start; }
+.measure-legend-group { padding: 4px 0 2px; color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.measure-legend-row { display: flex; align-items: center; gap: 8px; height: 22px; white-space: nowrap; }
+.measure-legend-glyph { width: 20px; height: 20px; }
+.measure-legend-swatch { width: 10px; height: 10px; margin: 0 5px; border-radius: 2px; }
+.measure-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+.measure-panel-value { padding: 10px 14px 6px; font-size: 20px; font-weight: 600; color: var(--text); }
+.measure-panel-modes { margin: 0 14px 10px; width: fit-content; }
+.measure-panel-actions { display: flex; gap: 8px; padding: 12px 14px; }
+.pcb-view.measuring, .view3d.measuring { cursor: crosshair; }
+.view3d-layer-badge span { color: #aaa; font-weight: 500; }
+/* A net's name over the 3D view: dark, with a light rim, so it reads over copper, mask, parts or the
+   grey around the board. Pinned (placed by View3d each frame beside a point), or else at the top of
+   the view. */
+.view3d-net-tag { position: absolute; z-index: 4; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 13px; border-radius: 6px; border: 1px solid rgba(255, 255, 255, 0.55); background: rgba(24, 24, 24, 0.86); color: #fff; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; pointer-events: none; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45); }
+.view3d-net-tag.pinned { top: 0; left: 0; }
 /* Shift+Tab through what is under the last click: which one of how many is selected. */
 .pcb-cycle-note { position: absolute; z-index: 3; bottom: 16px; left: 50%; transform: translateX(-50%); padding: 5px 12px; border-radius: 14px; border: 1px solid var(--border); background: rgba(20, 22, 26, 0.85); color: var(--text); font-size: 12px; white-space: nowrap; pointer-events: none; backdrop-filter: blur(4px); }
 .pcb-cycle-note .dim { color: var(--text-dim); }
