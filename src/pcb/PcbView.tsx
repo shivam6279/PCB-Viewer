@@ -8,7 +8,8 @@ import { MeasureTool, measureKey, type ToolHost } from "../measure/tool"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import { whenIdle } from "../app/idle"
 import type { Parser } from "../parse/parser"
-import { buildRenderCache, CANVAS_BG, drawComponentBox, drawNetGlow, drawObjectOutline, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
+import { QuarterTurns } from "../app/step-queue"
+import { buildRenderCache, CANVAS_BG, cameraMatrix, toBoardPoint, toCanvasPoint, viewExtent, drawComponentBox, drawNetGlow, drawObjectOutline, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
 import { drawLabels } from "./labels"
 import { buildIndex, componentAt, hitsAt, hitTest, netAt, objectsIn, type HitOptions, type PcbHit, type PcbIndex } from "./hit"
 import { LayersPanel } from "./LayersPanel"
@@ -42,6 +43,7 @@ const BITMAP_BUDGET = 16e6 // pixels
 const bitmapMargin = (viewPixels: number) => Math.max(0.05, Math.min(BITMAP_MARGIN, (Math.sqrt(BITMAP_BUDGET / viewPixels) - 1) / 2))
 const SETTLE_MS = 120
 const REDRAW_EVERY = 150
+const TURN_MS = 350 // Q / E: a quarter turn
 const DRAFT_QUALITY = 0.5
 const HIT_PX = 3 // click tolerance in screen pixels
 const CYCLE_NOTE_MS = 1800
@@ -73,9 +75,10 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const focusSeq = useAppStore(s => s.pcbFocusSeq)
 	const mark = pane.mark && !pane.mark.mostly ? pane.mark : null
 	// Side by side, both boards show the same place: the camera is shared through the pane's link.
-	const link = useRef<ViewLink<{ cx: number; cy: number; scale: number }> | null>(null)
-	link.current = (pane.links?.pcb as ViewLink<{ cx: number; cy: number; scale: number }> | undefined) ?? null
+	const link = useRef<ViewLink<{ cx: number; cy: number; scale: number; rot?: number }> | null>(null)
+	link.current = (pane.links?.pcb as ViewLink<{ cx: number; cy: number; scale: number; rot?: number }> | undefined) ?? null
 	const panelOpen = useAppStore(s => s.pcbPanelOpen)
+	const netColorsOn = useAppStore(s => s.netColors.pcb)
 	const stackupOpen = useAppStore(s => s.pcbStackupOpen)
 	const data = projectData.status === "ready" ? projectData.data : null
 	const [layers, setLayers] = useState<LayerState | null>(null)
@@ -93,6 +96,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	const cache = useRef<PcbRenderCache | null>(null)
 	const index = useRef<PcbIndex | null>(null)
 	const redraw = useRef<(quality?: number) => void>(() => {})
+	const rotateRef = useRef<(dir: 1 | -1) => void>(() => {}) // Q / E: a quarter turn, anticlockwise -1
 	const canvases = useRef<HTMLCanvasElement[]>([])
 	const blit = useRef<() => boolean>(() => false)
 	const timing = useRef({ board: 0, blit: 0 }) // ms: last board draw (into the bitmap), last view paint
@@ -138,7 +142,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	// Render caches and default layers follow the scene.
 	const [prepared, setPrepared] = useState<PcbScene | null>(null)
 	if (scene && prepared !== scene) {
-		cache.current = buildRenderCache(scene)
+		cache.current = buildRenderCache(scene, data?.netColors)
 		index.current = buildIndex(scene)
 		setPrepared(scene)
 		setLayers((followsLayers ? layerLink?.last?.value : null) ?? savedViews.get(scene)?.layers ?? defaultLayerState(scene))
@@ -236,6 +240,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			selectedOutline: highlight?.outline ?? null,
 			componentBox: null, // drawn on the live view (blit) so it stays crisp
 			tone,
+			netColors: netColorsOn,
 		})
 		timing.current.board = performance.now() - t0
 		bitmap.current = { canvas: off, camera: { ...cam }, at: performance.now() }
@@ -256,17 +261,17 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const b = bitmap.current
 		const ctx = el?.getContext("2d")
 		if (!el || !cam || !b || !ctx) return false
-		const s = cam.scale / b.camera.scale
-		const f = cam.flip ? -1 : 1
-		const cx = el.width / 2 + f * (b.camera.cx - cam.cx) * cam.scale
-		const cy = el.height / 2 - (b.camera.cy - cam.cy) * cam.scale
-		const w = b.canvas.width * s
-		const h = b.canvas.height * s
+		// The bitmap's pixels to the view's: back to the board through the camera it was drawn with, then
+		// out through the current one (shifted, scaled and, mid-turn, turned).
+		const toBitmap = new DOMMatrix(cameraMatrix(b.camera, b.canvas.width, b.canvas.height)).inverse()
+		const bitmapToView = new DOMMatrix(cameraMatrix(cam, el.width, el.height)).multiply(toBitmap)
 		ctx.setTransform(1, 0, 0, 1, 0, 0)
 		ctx.fillStyle = CANVAS_BG
 		ctx.fillRect(0, 0, el.width, el.height)
 		ctx.imageSmoothingEnabled = true
-		ctx.drawImage(b.canvas, cx - w / 2, cy - h / 2, w, h)
+		ctx.setTransform(bitmapToView)
+		ctx.drawImage(b.canvas, 0, 0)
+		ctx.setTransform(1, 0, 0, 1, 0, 0)
 		const g = glow.current
 		if (cache.current && glowRules.current && g.nets.size > 0)
 			drawNetGlow(ctx, cache.current, cam, { nets: [...g.nets].map(([net, level]) => ({ net, level })), ...glowRules.current })
@@ -275,9 +280,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const idx = index.current
 		const rules = labelRules.current
 		if (idx && rules) {
-			const halfW = el.width / 2 / cam.scale
-			const halfH = el.height / 2 / cam.scale
-			drawLabels(ctx, objectsIn(idx, cam.cx - halfW, cam.cy - halfH, cam.cx + halfW, cam.cy + halfH), cam, rules.isActive, rules.isCurrent)
+			const [x0, y0, x1, y1] = viewExtent(cam, el.width, el.height)
+			drawLabels(ctx, objectsIn(idx, x0, y0, x1, y1), cam, rules.isActive, rules.isCurrent)
 		}
 		// The selected part's box (green, hatched) and the hovered part's box (outline only).
 		const hovered = hoverComponent.current !== null ? scene?.components[hoverComponent.current]?.box : undefined
@@ -288,7 +292,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const previewed = previewObject.current !== null ? scene?.objects[previewObject.current] : undefined
 		if (previewed) drawObjectOutline(ctx, cam, previewed)
 		// The ruler's measurements, the one being made, and where the next click would land.
-		const toCanvas = (p: { x: number; y: number }) => ({ x: el.width / 2 + f * (p.x - cam.cx) * cam.scale, y: el.height / 2 - (p.y - cam.cy) * cam.scale })
+		const toCanvas = (p: { x: number; y: number }) => toCanvasPoint(cam, el.width, el.height, p.x, p.y)
 		const project = flatProjector(toCanvas, cam.scale)
 		const ratio = window.devicePixelRatio || 1
 		const sel = useAppStore.getState().selection
@@ -304,7 +308,12 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			if (live) drawMeasure(ctx, live, project, ratio, "live")
 			if (tool.cursor && tool.marking) drawSnapMarker(ctx, toCanvas(tool.cursor), tool.cursor.snap, ratio, tool.cursor.target)
 		}
-		return cx - w / 2 <= 0 && cy - h / 2 <= 0 && cx + w / 2 >= el.width && cy + h / 2 >= el.height
+		// Covered when every corner of the view lands inside the bitmap.
+		const viewToBitmap = bitmapToView.inverse()
+		return [[0, 0], [el.width, 0], [0, el.height], [el.width, el.height]].every(([x, y]) => {
+			const p = viewToBitmap.transformPoint(new DOMPoint(x, y))
+			return p.x >= 0 && p.y >= 0 && p.x <= b.canvas.width && p.y <= b.canvas.height
+		})
 	}
 	// The part boxes are fitted to the 3D models once those are in (see fitBoxesToModels): repaint the
 	// hovered and selected boxes, which are drawn on the live view.
@@ -317,7 +326,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 	// first, and coming back with nothing changed draws nothing.
 	const drawnFor = useRef<unknown[]>([])
 	useEffect(() => {
-		const inputs = [layers, highlight, scene, rules]
+		const inputs = [layers, highlight, scene, rules, netColorsOn]
 		if (inputs.every((v, i) => v === drawnFor.current[i])) return
 		const draw = () => {
 			drawnFor.current = inputs
@@ -325,7 +334,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		}
 		if (active) return draw()
 		return whenIdle(draw)
-	}, [layers, highlight, scene, rules, active])
+	}, [layers, highlight, scene, rules, netColorsOn, active])
 
 	// Size, fit and interaction once the scene is ready.
 	useEffect(() => {
@@ -345,7 +354,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			resize() // the view may just have been shown: frame for its real size
 			const w = Math.max(b[2] - b[0], minWidth), h = Math.max(b[3] - b[1], minWidth * 0.6)
 			const scale = Math.min(el.width / (w * (1 + 2 * margin)), el.height / (h * (1 + 2 * margin)))
-			camera.current = { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2, scale, flip: camera.current?.flip ?? false }
+			camera.current = { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2, scale, flip: camera.current?.flip ?? false, rot: camera.current?.rot ?? 0 }
 		}
 		resize()
 		const saved = savedViews.get(scene)?.camera
@@ -366,7 +375,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		let settle = 0
 		const schedule = (publish = true) => {
 			const cam = camera.current
-			if (publish && cam) shared?.publish({ cx: cam.cx, cy: cam.cy, scale: cam.scale }, me)
+			if (publish && cam) shared?.publish({ cx: cam.cx, cy: cam.cy, scale: cam.scale, rot: cam.rot ?? 0 }, me)
 			if (!frameReq)
 				frameReq = requestAnimationFrame(() => {
 					frameReq = 0
@@ -379,20 +388,45 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		const toWorld = (clientX: number, clientY: number) => {
 			const r = el.getBoundingClientRect()
 			const cam = camera.current!
-			const px = (clientX - r.left) * dpr(), py = (clientY - r.top) * dpr()
-			return { x: cam.cx + ((cam.flip ? -1 : 1) * (px - el.width / 2)) / cam.scale, y: cam.cy - (py - el.height / 2) / cam.scale }
+			return toBoardPoint(cam, el.width, el.height, (clientX - r.left) * dpr(), (clientY - r.top) * dpr())
 		}
+		// Q / E: a quarter turn anticlockwise / clockwise about the middle of the view. Presses queue (see
+		// step-queue.ts): the view keeps turning while any are waiting and comes to rest square.
+		const quarters = new QuarterTurns<"z">()
+		let turnFrame = 0
+		const runQuarters = () => {
+			const cam = camera.current
+			if (!cam || !quarters.begin()) return
+			const from = cam.rot ?? 0
+			let last = performance.now()
+			const step = () => {
+				const now = performance.now()
+				const { quarters: turned, ended } = quarters.advance(Math.min((now - last) / 1000, 0.05))
+				last = now
+				const c = camera.current!
+				c.rot = from + (turned * Math.PI) / 2
+				if (ended) {
+					turnFrame = 0
+					const quarter = Math.PI / 2
+					c.rot = (((Math.round(c.rot / quarter) % 4) + 4) % 4) * quarter // exactly square, within one turn
+				} else turnFrame = requestAnimationFrame(step)
+				schedule()
+			}
+			turnFrame = requestAnimationFrame(step)
+		}
+		rotateRef.current = dir => {
+			quarters.push({ key: "z", dir })
+			if (!turnFrame) runQuarters()
+		}
+
 		// For the browser tests: the scene, and where a board point is on screen.
 		Object.assign(el, {
 			__pcb: {
 				scene,
 				toClient(x: number, y: number) {
 					const r = el.getBoundingClientRect()
-					const cam = camera.current!
-					return {
-						x: r.left + (el.width / 2 + (cam.flip ? -1 : 1) * (x - cam.cx) * cam.scale) / dpr(),
-						y: r.top + (el.height / 2 - (y - cam.cy) * cam.scale) / dpr(),
-					}
+					const p = toCanvasPoint(camera.current!, el.width, el.height, x, y)
+					return { x: r.left + p.x / dpr(), y: r.top + p.y / dpr() }
 				},
 				camera: () => ({ ...camera.current! }),
 				layers: () => layersRef.current,
@@ -458,9 +492,12 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < CLICK_SLOP) return
 			if (!drag.moved) fr.classList.add("panning")
 			drag.moved = true
+			// The board follows the mouse: the move taken back to the board, whatever the turn.
 			const cam = camera.current!
-			cam.cx -= ((cam.flip ? -1 : 1) * (e.clientX - drag.x) * dpr()) / cam.scale
-			cam.cy += ((e.clientY - drag.y) * dpr()) / cam.scale
+			const before = toBoardPoint(cam, el.width, el.height, drag.x * dpr(), drag.y * dpr())
+			const after = toBoardPoint(cam, el.width, el.height, e.clientX * dpr(), e.clientY * dpr())
+			cam.cx -= after.x - before.x
+			cam.cy -= after.y - before.y
 			drag.x = e.clientX
 			drag.y = e.clientY
 			schedule()
@@ -534,6 +571,7 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			const entry = savedViews.get(scene)
 			if (entry && camera.current) entry.camera = { ...camera.current }
 			cancelAnimationFrame(frameReq)
+			cancelAnimationFrame(turnFrame)
 			clearTimeout(settle)
 			unlink?.()
 			fr.removeEventListener("wheel", onWheel)
@@ -711,8 +749,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			if (!el || !cam) return null
 			const r = el.getBoundingClientRect()
 			const ratio = window.devicePixelRatio || 1
-			const px = (clientX - r.left) * ratio, py = (clientY - r.top) * ratio
-			return { x: cam.cx + ((cam.flip ? -1 : 1) * (px - el.width / 2)) / cam.scale, y: cam.cy - (py - el.height / 2) / cam.scale, reach: (SNAP_PX * ratio) / cam.scale, perMil: cam.scale / ratio }
+			const p = toBoardPoint(cam, el.width, el.height, (clientX - r.left) * ratio, (clientY - r.top) * ratio)
+			return { ...p, reach: (SNAP_PX * ratio) / cam.scale, perMil: cam.scale / ratio }
 		}
 		hostRef.current = {
 			point(clientX, clientY, free) {
@@ -774,6 +812,10 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			}
 			if (e.code === "KeyS" && e.shiftKey) return change(nextMode)
 			if (e.code === "KeyF" && !e.shiftKey) return change(prev => ({ ...prev, flip: !prev.flip }))
+			if ((e.code === "KeyQ" || e.code === "KeyE") && !e.shiftKey) {
+				e.preventDefault()
+				return rotateRef.current(e.code === "KeyQ" ? -1 : 1)
+			}
 			if (e.key === "+" || e.key === "=") return change(prev => cycleCurrent(prev, scene, 1))
 			if (e.key === "-") return change(prev => cycleCurrent(prev, scene, -1))
 		}

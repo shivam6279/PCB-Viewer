@@ -7,7 +7,7 @@ import type { Parser } from "../parse/parser"
 import { componentSelection, netSelection, pcbNetName, partIndex, partKey, partLabel, pcbComponentIndex, pcbHighlight, selectionSide } from "../pcb/selection"
 import { LAYER_MODES, MODE_NAMES, type LayerMode } from "../pcb/layer-state"
 import type { PcbScene } from "../pcb/scene"
-import { BoardEngine, type CameraState } from "./engine"
+import { BoardEngine, type CameraState, type CubeFace } from "./engine"
 import { whenIdle } from "../app/idle"
 import { HIDDEN_3D_BY_DEFAULT, ObjectsPanel, type Objects3dState } from "./ObjectsPanel"
 import { ViewCube } from "./ViewCube"
@@ -19,6 +19,9 @@ import { MeasureTool, measureKey } from "../measure/tool"
 import { buildSolder } from "./solder"
 import type { StepQuality } from "./step-export/options"
 import { notFittedPaths, type ProjectVariant } from "../model/variants"
+
+// Alt+1–6, in the usual CAD order.
+const KEY_FACES: CubeFace[] = ["front", "back", "left", "right", "top", "bottom"]
 
 // The camera and Objects settings per board, kept with the board.
 const savedViews = new WeakMap<PcbScene, { camera: CameraState | null; objects: Objects3dState }>()
@@ -558,6 +561,15 @@ export function View3d({
 			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
 			if (measureKey(e, tool)) return
 			if (e.key === "Escape") useAppStore.getState().select(null)
+			// Alt+1–8: the standard views (front, back, left, right, top, bottom, isometric, normal to).
+			const digit = /^Digit([1-8])$/.exec(e.code)?.[1]
+			if (digit && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+				e.preventDefault()
+				if (digit === "7") ready?.showIsometric()
+				else if (digit === "8") ready?.showNormalTo()
+				else ready?.showFace(KEY_FACES[Number(digit) - 1]!)
+				return
+			}
 			if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
 			// Shift+S: the layer mode (all, highlight current, current only).
 			if (e.code === "KeyS" && e.shiftKey) {
@@ -565,6 +577,11 @@ export function View3d({
 				return setLayerView(v => ({ ...v, mode: LAYER_MODES[(LAYER_MODES.indexOf(v.mode) + 1) % LAYER_MODES.length]! }))
 			}
 			if (e.shiftKey) return
+			// Q / E: a quarter turn anticlockwise / clockwise about the line of sight.
+			if (e.code === "KeyQ" || e.code === "KeyE") {
+				e.preventDefault()
+				ready?.stepTurn("z", e.code === "KeyQ" ? -Math.PI / 2 : Math.PI / 2)
+			}
 			// F turns the board over about the cursor.
 			if (e.code === "KeyF") {
 				e.preventDefault()

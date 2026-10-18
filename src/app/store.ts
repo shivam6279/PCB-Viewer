@@ -87,6 +87,7 @@ interface AppState {
 	// The ruler (PCB and 3D views): on or off, the measurements made on the open board, what points
 	// snap to (remembered in this browser) and the kind of measurement the next one starts as.
 	measuring: boolean
+	netColors: NetColorViews // whether each view draws nets in the project's net colours (N)
 	measures: Measure[]
 	snapKinds: Set<SnapKind>
 	measureMode: MeasureMode
@@ -120,12 +121,32 @@ interface AppState {
 	setStepExporting(exporting: boolean): void
 	setStepEstimator(estimator: ((quality: StepQuality) => Promise<StepEstimate>) | null): void
 	setMeasuring(on: boolean): void
+	toggleNetColors(view: keyof NetColorViews): void
 	addMeasure(m: Omit<Measure, "id">): number
 	updateMeasure(id: number, patch: Partial<Omit<Measure, "id">>): void
 	removeMeasure(id: number): void
 	clearMeasures(view: Measure["view"]): void
 	setSnapKinds(kinds: Set<SnapKind>): void
 	setMeasureMode(mode: MeasureMode): void
+}
+
+// Net colours, per view: on in the schematic, off on the board until asked for. Kept per browser.
+export interface NetColorViews {
+	sch: boolean
+	pcb: boolean
+}
+const NET_COLORS_KEY = "viewer.netColors"
+
+function storedNetColors(): NetColorViews {
+	const out: NetColorViews = { sch: true, pcb: false }
+	try {
+		const raw = JSON.parse(localStorage.getItem(NET_COLORS_KEY) ?? "null") as Partial<NetColorViews> | null
+		if (typeof raw?.sch === "boolean") out.sch = raw.sch
+		if (typeof raw?.pcb === "boolean") out.pcb = raw.pcb
+	} catch {
+		// storage blocked or unreadable: the defaults
+	}
+	return out
 }
 
 export type Projection3d = "perspective" | "orthographic"
@@ -180,6 +201,7 @@ export const useAppStore = create<AppState>((set, get) => {
 		view3dProjection: storedProjection(),
 		view3dHidden: new Set(),
 		measuring: false,
+		netColors: storedNetColors(),
 		measures: [],
 		snapKinds: storedSnaps(),
 		measureMode: "distance",
@@ -257,6 +279,15 @@ export const useAppStore = create<AppState>((set, get) => {
 		},
 		setView3dHidden: view3dHidden => set({ view3dHidden }),
 		setMeasuring: measuring => set({ measuring }),
+		toggleNetColors(view) {
+			const netColors = { ...get().netColors, [view]: !get().netColors[view] }
+			try {
+				localStorage.setItem(NET_COLORS_KEY, JSON.stringify(netColors))
+			} catch {
+				// storage blocked: the choice lasts this visit only
+			}
+			set({ netColors })
+		},
 		addMeasure(m) {
 			const id = ++measureSeq
 			set({ measures: [...get().measures, { ...m, id }] })

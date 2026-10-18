@@ -9,6 +9,29 @@ export interface PcbCamera {
 	cy: number
 	scale: number // device pixels per mil
 	flip: boolean // bottom-side view: mirrored left-right
+	rot?: number // radians the board is turned on screen, clockwise, about the canvas centre (Q / E)
+}
+
+// Board (mils, y up) to canvas pixels (y down): mirrored when flipped, scaled, then turned by rot about
+// the centre. As a canvas transform [a, b, c, d, e, f]: x' = a x + c y + e, y' = b x + d y + f.
+export function cameraMatrix(camera: PcbCamera, width: number, height: number): [number, number, number, number, number, number] {
+	const f = camera.flip ? -1 : 1
+	const s = camera.scale
+	const cos = Math.cos(camera.rot ?? 0), sin = Math.sin(camera.rot ?? 0)
+	const a = cos * f * s, b = sin * f * s, c = sin * s, d = -cos * s
+	return [a, b, c, d, width / 2 - a * camera.cx - c * camera.cy, height / 2 - b * camera.cx - d * camera.cy]
+}
+
+export function toCanvasPoint(camera: PcbCamera, width: number, height: number, x: number, y: number): { x: number; y: number } {
+	const [a, b, c, d, e, f] = cameraMatrix(camera, width, height)
+	return { x: a * x + c * y + e, y: b * x + d * y + f }
+}
+
+export function toBoardPoint(camera: PcbCamera, width: number, height: number, px: number, py: number): { x: number; y: number } {
+	const dx = px - width / 2, dy = py - height / 2
+	const cos = Math.cos(camera.rot ?? 0), sin = Math.sin(camera.rot ?? 0)
+	const u = cos * dx + sin * dy, v = -sin * dx + cos * dy
+	return { x: camera.cx + (camera.flip ? -u : u) / camera.scale, y: camera.cy - v / camera.scale }
 }
 
 export interface PcbDrawState {
@@ -22,6 +45,7 @@ export interface PcbDrawState {
 	selectedOutline: Set<number> | null // pads drawn with the magenta selection outline
 	componentBox: number[] | null // four corners
 	tone?: string | null // highlighted objects in this colour instead of their layer's (compare: red / green)
+	netColors?: boolean // nets with a colour set in the project drawn in it, on every layer, instead of the layer's
 }
 
 export const CANVAS_BG = "#c8c8c8"
@@ -70,6 +94,12 @@ interface Chunk {
 	fill: Path2D
 	pour: Path2D // polygon pours, drawn translucent
 	texts: Extract<Prim, { t: "text" }>[]
+	nets: Map<string, NetPaths> // copper of the nets with a colour, by colour: drawn in the layer's colour or their own
+}
+
+interface NetPaths {
+	fill: Path2D
+	pour: Path2D
 }
 
 interface LayerCache {
@@ -86,9 +116,12 @@ export interface PcbRenderCache {
 	byKind: Map<string, Map<string, LayerCache>> // per kind, per layer (when some kinds are hidden)
 	holes: { pad: Chunk[]; via: Chunk[] }
 	board: Path2D
+	colorOf: (o: PcbObject) => string | undefined // an object's net colour
 }
 
-export function buildRenderCache(scene: PcbScene): PcbRenderCache {
+// netColors: the project's net colours by upper-case net name.
+export function buildRenderCache(scene: PcbScene, netColors: Record<string, string> = {}): PcbRenderCache {
+	const colorOf = (o: PcbObject) => (o.net ? netColors[o.net.toUpperCase()] : undefined)
 	const stackOf = new Map(scene.layers.filter(l => l.group === "copper").map(l => [l.key, l.stack]))
 	// The copper layers a via or through-hole pad exists on.
 	const spanned = (o: PcbObject) => {
@@ -115,13 +148,20 @@ export function buildRenderCache(scene: PcbScene): PcbRenderCache {
 				c.objects.push(o.id)
 				let chunk = c.cells.get(cell)
 				if (!chunk) {
-					chunk = { bbox: [Infinity, Infinity, -Infinity, -Infinity], fill: new Path2D(), pour: new Path2D(), texts: [] }
+					chunk = { bbox: [Infinity, Infinity, -Infinity, -Infinity], fill: new Path2D(), pour: new Path2D(), texts: [], nets: new Map() }
 					c.cells.set(cell, chunk)
 					c.chunks.push(chunk)
 				}
 				chunk.bbox = grow(chunk.bbox, o.bbox)
+				const color = colorOf(o)
+				let paths: NetPaths = chunk
+				if (color) {
+					let n = chunk.nets.get(color)
+					if (!n) chunk.nets.set(color, (n = { fill: new Path2D(), pour: new Path2D() }))
+					paths = n
+				}
 				for (const p of o.prims) if (p.t === "text") chunk.texts.push(p)
-				else addPrim(o.pour ? chunk.pour : chunk.fill, p)
+				else addPrim(o.pour ? paths.pour : paths.fill, p)
 			}
 		}
 		return out as Map<string, LayerCache>
@@ -134,7 +174,7 @@ export function buildRenderCache(scene: PcbScene): PcbRenderCache {
 			if (o.holes.length === 0 || !kind(o)) continue
 			const cell = cellOf(o)
 			let chunk = cells.get(cell)
-			if (!chunk) cells.set(cell, (chunk = { bbox: [Infinity, Infinity, -Infinity, -Infinity], fill: new Path2D(), pour: new Path2D(), texts: [] }))
+			if (!chunk) cells.set(cell, (chunk = { bbox: [Infinity, Infinity, -Infinity, -Infinity], fill: new Path2D(), pour: new Path2D(), texts: [], nets: new Map() }))
 			chunk.bbox = grow(chunk.bbox, o.bbox)
 			for (const h of o.holes) addPrim(chunk.fill, h)
 		}
@@ -143,7 +183,7 @@ export function buildRenderCache(scene: PcbScene): PcbRenderCache {
 	const holes = { pad: holeChunks(o => o.kind !== "via"), via: holeChunks(o => o.kind === "via") }
 	const board = new Path2D()
 	addRing(board, scene.outline)
-	return { scene, layers: make(scene.objects), byKind, holes, board }
+	return { scene, layers: make(scene.objects), byKind, holes, board, colorOf }
 }
 
 export function drawPcb(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, state: PcbDrawState) {
@@ -181,14 +221,19 @@ export function drawPcb(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, st
 }
 
 export function applyCamera(ctx: CanvasRenderingContext2D, camera: PcbCamera, width: number, height: number) {
-	const sx = camera.flip ? -camera.scale : camera.scale
-	ctx.setTransform(sx, 0, 0, -camera.scale, width / 2 - sx * camera.cx, height / 2 + camera.scale * camera.cy)
+	ctx.setTransform(...cameraMatrix(camera, width, height))
 }
 
 // The board area a canvas shows, for picking chunks.
 function viewBox(camera: PcbCamera, width: number, height: number): Box {
-	const hw = width / 2 / camera.scale
-	const hh = height / 2 / camera.scale
+	return viewExtent(camera, width, height)
+}
+
+// The board area a canvas of this size shows, as an upright box (a turned view's corners included).
+export function viewExtent(camera: PcbCamera, width: number, height: number): Box {
+	const cos = Math.abs(Math.cos(camera.rot ?? 0)), sin = Math.abs(Math.sin(camera.rot ?? 0))
+	const hw = (cos * width + sin * height) / 2 / camera.scale
+	const hh = (sin * width + cos * height) / 2 / camera.scale
 	return [camera.cx - hw, camera.cy - hh, camera.cx + hw, camera.cy + hh]
 }
 
@@ -209,11 +254,22 @@ function drawLayer(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, key: st
 			if (c) parts.push(c)
 		}
 	const chunks = parts.flatMap(c => c.chunks).filter(c => overlaps(c.bbox, view))
-	// Pours first across the whole layer, then the solid copper, so pours never cover tracks.
+	// Pours first across the whole layer, then the solid copper, so pours never cover tracks. A coloured
+	// net's copper is kept apart: different nets never overlap, so drawing it separately doubles nothing.
+	const fills = (which: "fill" | "pour") => {
+		for (const c of chunks) {
+			ctx.fillStyle = color
+			ctx.fill(c[which])
+			for (const [netColor, n] of c.nets) {
+				ctx.fillStyle = state.netColors ? tint(netColor) : color
+				ctx.fill(n[which])
+			}
+		}
+	}
 	ctx.globalAlpha = POUR_ALPHA
-	for (const c of chunks) ctx.fill(c.pour)
+	fills("pour")
 	ctx.globalAlpha = LAYER_ALPHA
-	for (const c of chunks) ctx.fill(c.fill)
+	fills("fill")
 	for (const c of chunks) for (const t of c.texts) drawText(ctx, t, color, state.camera.flip)
 	ctx.globalAlpha = 1
 }
@@ -244,24 +300,29 @@ function drawHighlight(ctx: CanvasRenderingContext2D, cache: PcbRenderCache, sta
 	for (const key of order) {
 		const layer = layerOf.get(key)
 		if (!layer) continue
-		const path = new Path2D()
-		const pours = new Path2D()
+		// Per colour shown: the layer's, or with net colours on, each coloured net's own.
+		const byColor = new Map<string, NetPaths>()
 		const holes = new Path2D()
 		const viaHoles = new Path2D()
 		let any = false
 		for (const o of objects) {
 			if (layerFor(o) !== key) continue
 			any = true
-			for (const p of o.prims) if (p.t === "text") drawText(ctx, p, state.tone ?? layer.color, state.camera.flip)
-			else addPrim(o.pour ? pours : path, p)
+			const color = state.tone ?? ((state.netColors && cache.colorOf(o)) || layer.color)
+			let paths = byColor.get(color)
+			if (!paths) byColor.set(color, (paths = { fill: new Path2D(), pour: new Path2D() }))
+			for (const p of o.prims) if (p.t === "text") drawText(ctx, p, color, state.camera.flip)
+			else addPrim(o.pour ? paths.pour : paths.fill, p)
 			for (const h of o.holes) addPrim(o.kind === "via" ? viaHoles : holes, h)
 		}
 		if (!any) continue
-		ctx.fillStyle = state.tone ?? layer.color
-		ctx.globalAlpha = SELECTED_POUR_ALPHA
-		ctx.fill(pours)
-		ctx.globalAlpha = 1
-		ctx.fill(path)
+		for (const [color, paths] of byColor) {
+			ctx.fillStyle = color
+			ctx.globalAlpha = SELECTED_POUR_ALPHA
+			ctx.fill(paths.pour)
+			ctx.globalAlpha = 1
+			ctx.fill(paths.fill)
+		}
 		ctx.fillStyle = PAD_HOLE
 		ctx.fill(holes)
 		ctx.fillStyle = VIA_HOLE
@@ -394,13 +455,11 @@ let hatch: CanvasPattern | null = null
 // A part's box (four corners, turned with the part): hatched when selected, outlined when hovered.
 export function drawComponentBox(ctx: CanvasRenderingContext2D, camera: PcbCamera, box: number[], selected: boolean) {
 	const { width, height } = ctx.canvas
-	const f = camera.flip ? -1 : 1
 	// Screen corners, on pixel centres so an upright box stays crisp.
 	const path = new Path2D()
 	for (let k = 0; k < 4; k++) {
-		const sx = width / 2 + f * (box[k * 2]! - camera.cx) * camera.scale
-		const sy = height / 2 - (box[k * 2 + 1]! - camera.cy) * camera.scale
-		path.lineTo(Math.round(sx) + 0.5, Math.round(sy) + 0.5)
+		const p = toCanvasPoint(camera, width, height, box[k * 2]!, box[k * 2 + 1]!)
+		path.lineTo(Math.round(p.x) + 0.5, Math.round(p.y) + 0.5)
 	}
 	path.closePath()
 	const dpr = globalThis.devicePixelRatio || 1

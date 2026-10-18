@@ -20,6 +20,7 @@ import { createDimmer, dimmable, srgb, type Dimmer } from "./materials"
 import type { SolderMesh } from "./solder"
 import type { StepMesh } from "./step-mesh"
 import { whenIdle } from "../app/idle"
+import { QuarterTurns } from "../app/step-queue"
 
 // Ray tests (zoom towards the cursor, clicks) through a bounding-volume tree per geometry: brute force
 // over ~1.3 M board triangles cost ~85 ms per wheel step.
@@ -48,6 +49,16 @@ export const CUBE_FACES: Record<CubeFace, { right: [number, number, number]; up:
 	back: { right: [-1, 0, 0], up: [0, 0, 1], back: [0, 1, 0] },
 	right: { right: [0, 1, 0], up: [0, 0, 1], back: [1, 0, 0] },
 	left: { right: [0, -1, 0], up: [0, 0, 1], back: [-1, 0, 0] },
+}
+
+// The view looking along -back (back points at the viewer) with up as near `up` as it can be.
+function facing(back: THREE.Vector3, up: THREE.Vector3) {
+	const b = back.clone().normalize()
+	let u = up.clone().sub(b.clone().multiplyScalar(up.dot(b)))
+	if (u.lengthSq() < 1e-6) u = new THREE.Vector3(0, 1, 0).sub(b.clone().multiplyScalar(b.y)) // looking along up
+	u.normalize()
+	const m = new THREE.Matrix4().makeBasis(u.clone().cross(b), u, b)
+	return new THREE.Quaternion().setFromRotationMatrix(m)
 }
 
 export function faceQuaternion(face: CubeFace) {
@@ -132,7 +143,8 @@ export class BoardEngine {
 	private frameRequest = 0
 	private pointer: { x: number; y: number } | null = null // the cursor over the view (client px): F flips about it
 	private turnFrame = 0 // a turn's animation frame (F, the view cube), while it turns
-	private turnEnd: (() => void) | null = null // puts the turn at its end
+	private turnGoal: THREE.Quaternion | null = null // where the running turn ends up facing
+	private quarters = new QuarterTurns<ViewAxis>() // queued quarter turns (Q / E, the cube's arrows)
 	private readonly renderListeners = new Set<() => void>()
 	private active = true // the 3D tab is showing (else frames wait for idle time, see setActive)
 	private pendingIdle: (() => void) | null = null
@@ -544,20 +556,15 @@ export class BoardEngine {
 	// orientation; a point off the centre ends up mirrored across it.
 	flip() {
 		const from = this.getView()
-		const flat = (v: THREE.Vector3) => v.applyQuaternion(from.quaternion).setZ(0)
+		const flat = (v: THREE.Vector3) => v.applyQuaternion(this.turnGoal ?? from.quaternion).setZ(0)
 		let axis = flat(new THREE.Vector3(0, 1, 0))
 		if (axis.lengthSq() < 1e-6) axis = flat(new THREE.Vector3(0, 0, 1))
 		axis.normalize()
 		// About the board point under the cursor, on the board's mid-plane: that spot's other face comes
 		// up where it was (the middle of the screen when the cursor is off the view).
-		const pivot = this.flipPivot()
-		const board = this.orbitBoard()
-		const ortho = this.projection === "orthographic"
-		this.animate(FLIP_MS, e => {
-			const next = orbit(from, board, pivot, new THREE.Quaternion().setFromAxisAngle(axis, Math.PI * e))
-			if (ortho) next.distance = from.distance
-			this.view = next
-		})
+		// Pressed again mid-flip: over once more from where that flip ends, turning on from where it is.
+		const goal = new THREE.Quaternion().setFromAxisAngle(axis, Math.PI).multiply(this.turnGoal ?? from.quaternion)
+		this.turnTo(goal, FLIP_MS, this.flipPivot(), this.turnGoal ? undefined : axis)
 	}
 
 	private flipPivot(): THREE.Vector3 {
@@ -570,19 +577,52 @@ export class BoardEngine {
 	// The view cube: turn to look straight at a face, the shortest way, about the same pivot as a mouse
 	// turn (the middle of the screen, on the board), so the point in the middle stays there.
 	showFace(face: CubeFace) {
-		this.stopTurn(true)
+		this.turnTo(faceQuaternion(face))
+	}
+
+	// Looking down onto the top, front and right at once (Alt+7).
+	showIsometric() {
+		this.turnTo(facing(new THREE.Vector3(1, -1, 1), new THREE.Vector3(0, 0, 1)))
+	}
+
+	// Straight at the surface under the cursor, keeping the view's up as near as it can (Alt+8). With
+	// nothing under it, the board face nearest the view.
+	showNormalTo() {
+		const hit = this.pointer && this.rayAt(this.pointer.x, this.pointer.y).intersectObjects(this.pickable(), false)[0]
+		const back = new THREE.Vector3(0, 0, 1).applyQuaternion(this.view.quaternion)
+		const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.view.quaternion)
+		let normal: THREE.Vector3
+		if (hit?.face) {
+			normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld)
+			if (normal.dot(back) < 0) normal.negate() // the side of the surface the view is on
+		} else normal = new THREE.Vector3(0, 0, back.z >= 0 ? 1 : -1)
+		this.turnTo(facing(normal, up))
+	}
+
+	// Turns to `target` from wherever the view is now, even mid-turn: a turn started while another runs
+	// carries on from that one's place and speed rather than jumping to its end. halfTurn: the axis of an
+	// exact half turn from rest (any axis would reach it, so the way round is given).
+	private turnTo(target: THREE.Quaternion, ms = FACE_MS, pivot?: THREE.Vector3, halfTurn?: THREE.Vector3) {
+		const moving = this.turnFrame !== 0
+		this.stopTurn()
 		const from = this.getView()
-		const r = faceQuaternion(face).multiply(from.quaternion.clone().invert())
+		const r = target.clone().multiply(from.quaternion.clone().invert())
 		if (Math.abs(r.w) > 1 - 1e-9) return // already looking at it
-		const pivot = this.rotationPivot()
+		const at = pivot ?? this.rotationPivot()
 		const board = this.orbitBoard()
 		const ortho = this.projection === "orthographic"
-		this.animate(FACE_MS, e => {
-			const next = orbit(from, board, pivot, new THREE.Quaternion().slerp(r, e))
-			// Orthographic: the distance is the zoom; keep it.
-			if (ortho) next.distance = from.distance
-			this.view = next
-		})
+		this.turnGoal = target.clone()
+		this.animate(
+			ms,
+			e => {
+				const turn = halfTurn ? new THREE.Quaternion().setFromAxisAngle(halfTurn, Math.PI * e) : new THREE.Quaternion().slerp(r, e)
+				const next = orbit(from, board, at, turn)
+				// Orthographic: the distance is the zoom; keep it.
+				if (ortho) next.distance = from.distance
+				this.view = next
+			},
+			moving,
+		)
 	}
 
 	// Turns about one of the view's own axes (x right, y up, z towards the viewer) through the mouse-turn
@@ -594,11 +634,39 @@ export class BoardEngine {
 		this.changed()
 	}
 
+	// A quarter turn (angle's sign gives the way), queued (see step-queue.ts): the view keeps turning while
+	// any are waiting and comes to rest square. One pressed during another kind of turn waits for it.
 	stepTurn(axis: ViewAxis, angle: number) {
-		this.stopTurn(true)
+		const idle = this.quarters.queue.length === 0
+		this.quarters.push({ key: axis, dir: angle > 0 ? 1 : -1 })
+		if (idle && !this.turnFrame) this.runQuarters()
+	}
+
+	// One run about one axis, from the view as it is: turning about a view axis leaves that axis where it
+	// is, so the whole run turns about one fixed line through the mouse-turn pivot.
+	private runQuarters() {
+		const q = this.quarters
+		if (!q.begin()) return
 		const from = this.getView()
 		const pivot = this.rotationPivot()
-		this.animate(FACE_MS, e => (this.view = this.turned(from, axis, angle * e, pivot)))
+		const board = this.orbitBoard()
+		const ortho = this.projection === "orthographic"
+		const axis = new THREE.Vector3(q.key === "x" ? 1 : 0, q.key === "y" ? 1 : 0, q.key === "z" ? 1 : 0).applyQuaternion(from.quaternion)
+		let last = performance.now()
+		const frame = () => {
+			const now = performance.now()
+			const { quarters, ended } = q.advance(Math.min((now - last) / 1000, 0.05))
+			last = now
+			const next = orbit(from, board, pivot, new THREE.Quaternion().setFromAxisAngle(axis, (quarters * Math.PI) / 2))
+			// Orthographic: the distance is the zoom; keep it.
+			if (ortho) next.distance = from.distance
+			this.view = next
+			this.changed()
+			if (!ended) return void (this.turnFrame = requestAnimationFrame(frame))
+			this.turnFrame = 0
+			if (q.queue.length > 0) this.runQuarters() // the next ones turn about another axis
+		}
+		this.turnFrame = requestAnimationFrame(frame)
 	}
 
 	private turned(view: CameraState, axis: ViewAxis, angle: number, pivot: THREE.Vector3): CameraState {
@@ -611,26 +679,32 @@ export class BoardEngine {
 	}
 
 	// A turn eased over `ms`: `at` sets the view for an eased share 0..1. A mouse press, wheel or new
-	// view stops it where it is; another turn first puts this one at its end.
-	private animate(ms: number, at: (eased: number) => void) {
-		this.stopTurn(true)
+	// view stops it where it is. moving: it takes over from a turn under way, so it starts at speed and
+	// only slows into its end (from rest it also eases in).
+	private animate(ms: number, at: (eased: number) => void, moving = false) {
+		this.stopTurn()
 		const start = performance.now()
+		const ease = moving ? (t: number) => 1 - (1 - t) ** 3 : (t: number) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
 		const step = () => {
 			const t = Math.min((performance.now() - start) / ms, 1)
-			at(t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2)
+			at(ease(t))
 			this.changed()
 			this.turnFrame = t < 1 ? requestAnimationFrame(step) : 0
-			this.turnEnd = t < 1 ? () => at(1) : null
+			if (t < 1) return
+			this.turnGoal = null
+			this.runQuarters() // quarter turns pressed while it ran
+
 		}
 		step()
 	}
 
-	private stopTurn(finish = false) {
+	// Stops where it is (a mouse press, the wheel, a new view): quarter turns still waiting are dropped.
+	private stopTurn() {
+		this.turnGoal = null
+		this.quarters.clear()
 		if (!this.turnFrame) return
 		cancelAnimationFrame(this.turnFrame)
 		this.turnFrame = 0
-		if (finish) this.turnEnd?.()
-		this.turnEnd = null
 	}
 
 	// Called after every frame drawn (the view cube follows the camera).

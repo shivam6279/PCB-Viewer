@@ -6,7 +6,7 @@ import { SheetPicker } from "./SheetPicker"
 import { flattenHierarchy } from "../model/hierarchy"
 import { stripExt } from "../source/paths"
 import type { ProjectSummary } from "../model/load-project"
-import { Download, Layers, Layers3, Ruler } from "lucide-react"
+import { Download, Layers, Layers3, Palette, Ruler } from "lucide-react"
 import { useAppStore, type ViewTab } from "../app/store"
 
 export interface DocBarProps {
@@ -45,6 +45,7 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 	const stepExporting = useAppStore(s => s.stepExporting)
 	const stepDialogOpen = useAppStore(s => s.stepDialogOpen)
 	const measuring = useAppStore(s => s.measuring)
+	const netColors = useAppStore(s => s.netColors)
 	const enabled = (t: ViewTab) => tabEnabled(project, t)
 
 	return (
@@ -85,6 +86,17 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 			</div>
 			<div className="docbar-right">
 				{right}
+				{((tab === "sch" && sheets.length > 0) || (tab === "pcb" && hasPcb)) && (
+					<button
+						className={`docbar-tool${netColors[tab] ? " on" : ""}`}
+						aria-label="Net colours"
+						aria-pressed={netColors[tab]}
+						aria-keyshortcuts="N"
+						onClick={() => useAppStore.getState().toggleNetColors(tab)}
+					>
+						<Palette size={16} />
+					</button>
+				)}
 				{(tab === "pcb" || tab === "3d") && hasPcb && (
 					<button className={`docbar-tool${measuring ? " on" : ""}`} aria-label="Ruler" aria-pressed={measuring} aria-keyshortcuts="M" onClick={() => useAppStore.getState().setMeasuring(!measuring)}>
 						<Ruler size={16} />

@@ -288,6 +288,7 @@ button { font: inherit; color: inherit; }
 .pcb-layer-row input:not(:checked) { visibility: hidden; }
 .pcb-layer-row:hover input:not(:disabled) { visibility: visible; }
 .sch-host [data-net-color] { pointer-events: none; }
+.sch-host[data-net-colors="off"] [data-net-color] { display: none; }
 
 /* GitHub progress + the viewer's commit picker */
 .spin { animation: spin 1s linear infinite; }

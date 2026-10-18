@@ -35,12 +35,18 @@ export function Viewer() {
 	}, [source, project, parser])
 
 	// 1-4: switch to SCH, PCB, 3D, BOM (when that tab has something to show), from anywhere but a text field.
+	// N: net colours on or off in the schematic or on the board, whichever is shown.
 	const viewing = useAppStore(s => s.screen.kind === "viewer") // not parked behind the home screen
 	useEffect(() => {
 		if (!viewing || !project) return
 		const onKey = (e: KeyboardEvent) => {
 			if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat) return
 			if ((e.target as Element | null)?.closest?.("input, textarea, select, [contenteditable]")) return
+			const { screen: shown, toggleNetColors } = useAppStore.getState()
+			if (e.code === "KeyN" && shown.kind === "viewer" && (shown.tab === "sch" || shown.tab === "pcb")) {
+				e.preventDefault()
+				return toggleNetColors(shown.tab)
+			}
 			const tab = TAB_ORDER[Number(e.key) - 1]
 			if (!tab || !/^[1-4]$/.test(e.key) || !tabEnabled(project, tab)) return
 			e.preventDefault()

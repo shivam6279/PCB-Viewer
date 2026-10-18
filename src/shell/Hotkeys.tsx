@@ -20,6 +20,7 @@ const VIEWS: Record<ViewTab, Hotkey[]> = {
 	sch: [
 		{ keys: "Wheel", does: "Zoom" },
 		{ keys: "Drag", does: "Pan" },
+		{ keys: "N", does: "Net colours on / off" },
 	],
 	pcb: [
 		{ keys: "Wheel", does: "Zoom" },
@@ -28,6 +29,8 @@ const VIEWS: Record<ViewTab, Hotkey[]> = {
 		{ keys: "Ctrl+Shift+Wheel", does: "Step through the layers" },
 		{ keys: "Shift+S", does: "Layer mode: all, highlight current, current only" },
 		{ keys: "F", does: "Mirror: view from the bottom" },
+		{ keys: "Q / E", does: "Turn the view 90° anticlockwise / clockwise" },
+		{ keys: "N", does: "Net colours on / off (drawn over the layer colours)" },
 		{ keys: "Hold Shift", does: "Outline the net under the cursor" },
 		{ keys: "Double-click", does: "Select a track's whole net" },
 		{ keys: "Right-click", does: "List what is under the cursor" },
@@ -43,7 +46,11 @@ const VIEWS: Record<ViewTab, Hotkey[]> = {
 		{ keys: "Drag", does: "Rotate" },
 		{ keys: "Right-drag", does: "Pan" },
 		{ keys: "Wheel", does: "Zoom" },
+		{ keys: "Alt+1 – 6", does: "View front, back, left, right, top, bottom" },
+		{ keys: "Alt+7", does: "Isometric view" },
+		{ keys: "Alt+8", does: "Look straight at the surface under the cursor" },
 		{ keys: "F", does: "Flip the board over at the cursor" },
+		{ keys: "Q / E", does: "Roll the view 90° anticlockwise / clockwise" },
 		{ keys: "Z", does: "Hide / show part bodies" },
 		{ keys: "Shift+S", does: "Layer mode: all, highlight current, current only" },
 		{ keys: "Ctrl+Shift+Wheel", does: "Step through the layers" },

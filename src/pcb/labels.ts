@@ -9,7 +9,7 @@
 // Labels never overlap: pads are placed first, then vias, then tracks, and a label that would overlap
 // one already placed is dropped. A track label is also dropped where it would sit on a pad or via, which
 // carries the same name already.
-import type { PcbCamera } from "./draw"
+import { cameraMatrix, type PcbCamera } from "./draw"
 import type { PcbObject } from "./scene"
 
 const FONT_PX = 12.5 // css px
@@ -45,9 +45,12 @@ export function drawLabels(
 ) {
 	const { width, height } = ctx.canvas
 	const dpr = pixelRatio
-	const f = camera.flip ? -1 : 1
-	const sx = (x: number) => width / 2 + f * (x - camera.cx) * camera.scale
-	const sy = (y: number) => height / 2 - (y - camera.cy) * camera.scale
+	// Positions follow the board as it is turned on screen; the text is laid out on screen, so it stays
+	// level (or along a track) whatever the turn.
+	const [ma, mb, mc, md, me, mf] = cameraMatrix(camera, width, height)
+	const sx = (x: number, y: number) => ma * x + mc * y + me
+	const sy = (x: number, y: number) => mb * x + md * y + mf
+	const turn = ((camera.rot ?? 0) * 180) / Math.PI
 	const px = (mils: number) => (mils * camera.scale) / dpr // a board length in css px
 	ctx.setTransform(1, 0, 0, 1, 0, 0)
 	const widthAt = (s: string, size: number) => {
@@ -79,17 +82,19 @@ export function drawLabels(
 		const current = isCurrent(o)
 		if (o.kind === "via" || o.kind === "pad") {
 			const b = o.bbox
-			bodies.push([Math.min(sx(b[0]), sx(b[2])), sy(b[3]), Math.max(sx(b[0]), sx(b[2])), sy(b[1])])
+			const xs = [sx(b[0], b[1]), sx(b[2], b[1]), sx(b[0], b[3]), sx(b[2], b[3])]
+			const ys = [sy(b[0], b[1]), sy(b[2], b[1]), sy(b[0], b[3]), sy(b[2], b[3])]
+			bodies.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)])
 		}
 		if (o.kind === "via") {
 			const dia = px(o.width ?? 0)
-			if (o.net && dia >= VIA_MIN) vias.push(make([o.net], sx(o.at[0]), sy(o.at[1]), 0, font, current))
+			if (o.net && dia >= VIA_MIN) vias.push(make([o.net], sx(o.at[0], o.at[1]), sy(o.at[0], o.at[1]), 0, font, current))
 		} else if (o.kind === "pad" && o.pad) {
 			const number = o.pad.name
 			const net = o.net ?? ""
 			if (!number && !net) continue
-			// The pad's sides on screen: a quarter-turn rotation swaps them.
-			const quarter = Math.round(o.pad.rotation / 90) % 2 !== 0
+			// The pad's sides on screen: a quarter turn, of the pad or of the view, swaps them.
+			const quarter = Math.abs(Math.round((o.pad.rotation + turn) / 90)) % 2 !== 0
 			const w = px(quarter ? o.pad.sizeY : o.pad.sizeX)
 			const h = px(quarter ? o.pad.sizeX : o.pad.sizeY)
 			const vertical = h > w * 1.15
@@ -99,15 +104,15 @@ export function drawLabels(
 			const angle = vertical ? -Math.PI / 2 : 0
 			const measure = (s: string) => widthAt(s, font) / dpr
 			if (two.length === 2 && long <= short * 2 && short >= fontCss * 2.6 && Math.max(...two.map(measure)) <= long * 1.1)
-				pads.push(make(two, sx(o.at[0]), sy(o.at[1]), angle, font, current))
+				pads.push(make(two, sx(o.at[0], o.at[1]), sy(o.at[0], o.at[1]), angle, font, current))
 			else {
 				const one = two.join(" : ")
-				if (short >= fontCss * 1.1 && measure(one) <= long * 1.3) pads.push(make([one], sx(o.at[0]), sy(o.at[1]), angle, font, current))
+				if (short >= fontCss * 1.1 && measure(one) <= long * 1.3) pads.push(make([one], sx(o.at[0], o.at[1]), sy(o.at[0], o.at[1]), angle, font, current))
 			}
 		} else if (o.kind === "track" && o.net) {
 			const p = o.prims[0]
 			if (!p || p.t !== "seg" || px(p.w) < TRACK_MIN) continue
-			const x1 = sx(p.x1), y1 = sy(p.y1), x2 = sx(p.x2), y2 = sy(p.y2)
+			const x1 = sx(p.x1, p.y1), y1 = sy(p.x1, p.y1), x2 = sx(p.x2, p.y2), y2 = sy(p.x2, p.y2)
 			if (widthAt(o.net, font) > Math.hypot(x2 - x1, y2 - y1) * 0.9) continue
 			tracks.push(make([o.net], (x1 + x2) / 2, (y1 + y2) / 2, upright(Math.atan2(y2 - y1, x2 - x1)), font, current))
 		}

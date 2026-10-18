@@ -29,6 +29,7 @@ export interface ProjectData {
 	// record index -> colour. A colour set on any of a net's names (12V) reaches the net under every
 	// other name it has on lower sheets (V_GATE_DRIVE).
 	wireColors: Record<string, Record<number, string>>
+	netColors: Record<string, string> // the project's net colours by every name a net goes by, upper case (the board's nets)
 	bom: Bom | null // null: no parts anywhere
 }
 
@@ -66,7 +67,7 @@ export function buildProjectData(input: ProjectDataInput): ProjectData {
 		designatorFormat: input.designatorFormat,
 		padNets: pcb ? new Map(pcb.padNets) : undefined,
 	})
-	return { compiled, sheets: Object.fromEntries(sheets), pcb, errors, wireColors: wireColors(input, compiled, sheets), bom: bomOf(input, compiled, pcb, errors) }
+	return { compiled, sheets: Object.fromEntries(sheets), pcb, errors, wireColors: wireColors(input, compiled, sheets), netColors: boardNetColors(input, compiled), bom: bomOf(input, compiled, pcb, errors) }
 }
 
 // The BOM from the board's parts, else the schematics', with the BOM document's items when there is one.
@@ -89,6 +90,22 @@ export function getPcbScene(): PcbScene | null {
 	if (!board) return null
 	scene ??= buildPcbScene(board)
 	return scene
+}
+
+// A colour set on one name of a net applies to the whole net, whichever name the board uses for it.
+function boardNetColors(input: ProjectDataInput, compiled: CompiledProject): ProjectData["netColors"] {
+	const out: ProjectData["netColors"] = {}
+	if (!input.project) return out
+	const colors = parseNetColors(decodeText(input.project))
+	if (Object.keys(colors).length === 0) return out
+	for (const net of compiled.nets) {
+		const names = [net.netName, net.physicalName, ...net.names].filter(Boolean)
+		const name = names.find(n => colors[n.toLowerCase()] !== undefined)
+		if (!name) continue
+		for (const n of names) out[n.toUpperCase()] ??= colors[name.toLowerCase()]!
+	}
+	for (const [n, color] of Object.entries(colors)) out[n.toUpperCase()] ??= color
+	return out
 }
 
 function wireColors(input: ProjectDataInput, compiled: CompiledProject, sheets: Map<string, SheetData>): ProjectData["wireColors"] {

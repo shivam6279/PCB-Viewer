@@ -298,9 +298,10 @@ export function SchematicView({ source, project, node, parser }: {
 		useAppStore.getState().jumpTo(instanceId, jumpObjects(net, instanceId, sheet), { kind: "net", netId: menu.netId })
 	}
 
+	const netColorsOn = useAppStore(s => s.netColors.sch)
 	return (
 		<div className="sch-view" ref={frame} data-status={state.status} data-node={node.id} data-compiled={data ? "true" : "false"}>
-			<div className="sch-host" ref={host} />
+			<div className="sch-host" ref={host} data-net-colors={netColorsOn ? "on" : "off"} />
 			{state.status === "loading" && <div className="view-message">Loading {node.label}…</div>}
 			{state.status === "error" && <div className="view-message error">{state.message}</div>}
 			{menu && <PortMenu x={menu.x} y={menu.y} area={menu.area} items={menu.items} onPick={jump} onClose={() => setMenu(null)} />}
