@@ -450,11 +450,15 @@ function renderSchematicRecord(
     const location = getSchematicLocation(record)
     const x = viewport.toX(location.x)
     const y = viewport.toY(location.y)
+    // A parameter's NAME is its label, not its value: one left empty is saved
+    // with no TEXT and draws nothing.
     const sourceText =
-      record.getDecoded("TEXT") ??
-      record.getDecoded("NAME") ??
-      record.getDecoded("DESIGNATOR") ??
-      ""
+      kind === "41"
+        ? (record.getDecoded("TEXT") ?? "")
+        : (record.getDecoded("TEXT") ??
+          record.getDecoded("NAME") ??
+          record.getDecoded("DESIGNATOR") ??
+          "")
     const text = context.document
       ? (resolveSchematicParameterReferenceWithContext({
           currentDate: options.currentDate,
