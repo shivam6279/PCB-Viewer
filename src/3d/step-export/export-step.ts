@@ -6,7 +6,7 @@
 import type { ContourSeg, PcbScene } from "../../pcb/scene"
 import type { Board3d, Board3dBody, Board3dColors, Rgb } from "../board3d"
 import { outerLayers, primPaths, SCALE, type LayerRegion } from "../board-geometry"
-import { renumber, stepEntities, stepRoots, withItem } from "./step-file"
+import { partColoursToBodies, renumber, stepEntities, stepRoots, withItem } from "./step-file"
 import { StepWriter, type PathSeg, type Region, type Ring, type Vec3 } from "./step-writer"
 import { DEFAULT_STEP_OPTIONS, QUALITY_TOLERANCE, type StepEstimate, type StepExportOptions, type StepQuality } from "./options"
 
@@ -373,9 +373,10 @@ function ringContainsCircle(ring: number[], x: number, y: number, r: number): bo
 
 // A model's records, renumbered into the writer; its root products (each with an axis to place it by,
 // added to its representation when it has none). Null when the file is unreadable or has no product.
+// A colour on a whole part goes onto its bodies (see partColoursToBodies).
 function copyModel(w: StepWriter, bytes: Uint8Array | null): { definition: number; representation: number; axis: number }[] | null {
 	if (!bytes) return null
-	const entities = stepEntities(fromLatin1(bytes))
+	const entities = partColoursToBodies(stepEntities(fromLatin1(bytes)))
 	const roots = stepRoots(entities)
 	if (!roots.length) return null
 	const first = w.reserve(entities.length + roots.length * 4)

@@ -206,3 +206,67 @@ export function withItem(body: string, item: number): string {
 	}
 	return body
 }
+
+// Records that list styled items, and which of their arguments is the list.
+const STYLE_LISTS: Record<string, number> = {
+	MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION: 1,
+	DRAUGHTING_MODEL: 1,
+	PRESENTATION_LAYER_ASSIGNMENT: 2,
+}
+// Representation items that are not bodies: nothing to colour.
+const NOT_BODIES = new Set(["AXIS2_PLACEMENT_3D", "MAPPED_ITEM", "CARTESIAN_POINT", "DIRECTION"])
+
+// A colour styled onto a whole shape representation (a part colour), moved onto each of its bodies
+// that has no colour of its own, and removed. SolidWorks lets a part colour override every body's
+// (and SolidWorks itself writes its default grey as one), so such a part imported all grey. As the 3D
+// view reads it (see StepSolid): a part of one body takes whichever colour the file lists first, the
+// part's or the body's own. A colour referred to by anything but a list of styled items is left as is.
+export function partColoursToBodies(entities: StepEntity[]): StepEntity[] {
+	const byId = new Map(entities.map(e => [e.id, e]))
+	const order = new Map(entities.map((e, i) => [e.id, i]))
+	const styles = entities.filter(e => typeOf(e.body) === "STYLED_ITEM" || typeOf(e.body) === "OVER_RIDING_STYLED_ITEM")
+	const targetOf = (e: StepEntity) => refOf(argsOf(e.body)[2])
+	const parts = styles.filter(e => typeOf(e.body) === "STYLED_ITEM" && /REPRESENTATION$/.test(typeOf(byId.get(targetOf(e) ?? -1)?.body ?? "") ?? ""))
+	if (!parts.length) return entities
+	const users = new Map<number, StepEntity[]>()
+	for (const e of entities) for (const id of new Set(refsOf(e.body))) if (byId.has(id)) users.set(id, [...(users.get(id) ?? []), e])
+	const inListsOnly = (id: number) => (users.get(id) ?? []).every(u => STYLE_LISTS[typeOf(u.body) ?? ""] !== undefined)
+	let next = Math.max(...entities.map(e => e.id)) + 1
+	const added: StepEntity[] = []
+	const replaced = new Map<number, number[]>() // a colour removed -> the colours in its place
+	for (const p of parts) {
+		if (!inListsOnly(p.id)) continue
+		const [name, list, rep] = argsOf(p.body)
+		const items = refsOf(argsOf(byId.get(refOf(rep)!)!.body)[1]).filter(id => byId.has(id) && !NOT_BODIES.has(typeOf(byId.get(id)!.body) ?? ""))
+		const own = (id: number) => styles.filter(s => s !== p && targetOf(s) === id)
+		// One body whose own colour the file lists after the part's: the part's wins, and the body's goes.
+		if (items.length === 1) {
+			const later = own(items[0]!)
+			if (later.length && later.every(s => order.get(s.id)! > order.get(p.id)! && inListsOnly(s.id))) for (const s of later) replaced.set(s.id, [])
+		}
+		const bodies = items.filter(id => own(id).every(s => replaced.has(s.id)))
+		replaced.set(p.id, bodies.map(body => {
+			const id = next++
+			added.push({ id, body: `STYLED_ITEM(${name},${list},#${body})` })
+			return id
+		}))
+	}
+	if (!replaced.size) return entities
+	const out: StepEntity[] = []
+	for (const e of entities) {
+		if (replaced.has(e.id)) continue
+		const at = STYLE_LISTS[typeOf(e.body) ?? ""]
+		const ids = at !== undefined ? refsOf(argsOf(e.body)[at]) : []
+		if (!ids.some(id => replaced.has(id))) {
+			out.push(e)
+			continue
+		}
+		const items = ids.flatMap(id => replaced.get(id) ?? [id])
+		// A list left empty (a layer that held only the part colour): the record goes.
+		if (!items.length) continue
+		const args = argsOf(e.body)
+		args[at!] = `(${items.map(id => `#${id}`).join(",")})`
+		out.push({ id: e.id, body: `${typeOf(e.body)}(${args.join(",")})` })
+	}
+	return [...out, ...added]
+}

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest"
 import occtFactory from "occt-import-js"
-import { renumber, stepEntities, stepRoots, withItem } from "./step-file"
+import { partColoursToBodies, renumber, stepEntities, stepRoots, withItem } from "./step-file"
 import { num, StepWriter } from "./step-writer"
 
 const MODEL = [
@@ -39,6 +39,44 @@ test("a model's root is placed by an axis that is its own frame, never a turned 
 	expect(roots).toEqual([{ productDefinition: 10, representation: 20, axis: 25 }])
 	const withoutOrigin = MODEL.replace("(#21,#25)", "(#21)")
 	expect(stepRoots(stepEntities(withoutOrigin))[0]!.axis).toBeNull()
+})
+
+test("a colour on a whole part moves to the bodies without their own, so it never hides theirs", () => {
+	const model = [
+		"DATA;",
+		"#20=ADVANCED_BREP_SHAPE_REPRESENTATION('part',(#21,#30,#31),#99);",
+		"#21=AXIS2_PLACEMENT_3D('',#22,$,$);",
+		"#30=MANIFOLD_SOLID_BREP('body',#90);",
+		"#31=MANIFOLD_SOLID_BREP('lead',#91);",
+		"#40=STYLED_ITEM('NONE',(#41),#30);", // the body's own colour
+		"#45=STYLED_ITEM('NONE',(#46),#20);", // the part's
+		"#50=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#40),#98);",
+		"#51=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#45),#97);",
+		"#52=PRESENTATION_LAYER_ASSIGNMENT('','',(#45));",
+		"ENDSEC;",
+	].join("\n")
+	const out = partColoursToBodies(stepEntities(model))
+	const byId = new Map(out.map(e => [e.id, e.body]))
+	// The part's colour is gone; the lead (no colour of its own) has it; the body keeps its own.
+	expect(byId.has(45)).toBe(false)
+	expect(byId.get(40)).toBe("STYLED_ITEM('NONE',(#41),#30)")
+	const lead = out.find(e => /^STYLED_ITEM\('NONE',\(#46\),#31\)$/.test(e.body))!
+	expect(lead).toBeDefined()
+	expect(byId.get(51)).toBe(`MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(#${lead.id}),#97)`)
+	expect(byId.get(52)).toBe(`PRESENTATION_LAYER_ASSIGNMENT('','',(#${lead.id}))`)
+	for (const e of out) for (const m of e.body.matchAll(/#(\d+)/g)) expect(Number(m[1])).not.toBe(45)
+	// Every body coloured already: the part colour and the lists left empty by it simply go.
+	const allOwn = partColoursToBodies(stepEntities(model.replace("ENDSEC;", "#42=STYLED_ITEM('NONE',(#41),#31);\nENDSEC;")))
+	expect(allOwn.map(e => e.id)).toEqual([20, 21, 30, 31, 40, 50, 42])
+	// One body: the colour listed first wins. Its own, listed first, stays; listed after the part's, the
+	// part's takes its place.
+	const one = model.replace("(#21,#30,#31)", "(#21,#30)")
+	expect(partColoursToBodies(stepEntities(one)).find(e => e.id === 40)?.body).toBe("STYLED_ITEM('NONE',(#41),#30)")
+	const partFirst = partColoursToBodies(stepEntities(one.replace("#40=STYLED_ITEM('NONE',(#41),#30);", "").replace("ENDSEC;", "#70=STYLED_ITEM('NONE',(#41),#30);\nENDSEC;").replace("(#40)", "(#70)")))
+	expect(partFirst.filter(e => e.body.startsWith("STYLED_ITEM")).map(e => e.body)).toEqual(["STYLED_ITEM('NONE',(#46),#30)"])
+	// A part colour also used some other way is left alone.
+	const other = model.replace("ENDSEC;", "#60=DRAUGHTING_CALLOUT('',(#45));\nENDSEC;")
+	expect(partColoursToBodies(stepEntities(other))).toEqual(stepEntities(other))
 })
 
 test("STEP reals always carry a decimal point", () => {
