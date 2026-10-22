@@ -4,7 +4,8 @@ A static, client-side web app for Altium Designer projects: schematic, PCB and 3
 cross-probing, any commit of the owner's GitHub repo, and side-by-side commit diffs. Personal tool for
 the owner; hosted on GitHub Pages, nothing uploaded. Not affiliated with Altium.
 
-- **Git: commit only when the owner asks.** Branch `main`; `git push` deploys to Pages.
+- **Git: commit only when the owner asks.** Branch `main`. Pages is taken down for now (both repos private,
+  the deploy workflow disabled): the owner works locally; `git push` deploys nothing.
 - Verify before handing back: run it end to end (unit + browser tests, screenshots) — the owner should
   never be the first to find it broken.
 
@@ -45,19 +46,62 @@ npm run index            # the GitHub index from the local PCB clone, into publi
   projects; a folder holding just one project folds into it).
 - `tools/build-index.mjs`: the index, from plain git on a blobless clone (no API). Run by
   `.github/workflows/pages.yml` on push, by hand, on a `pcb-push` repository_dispatch, and every 2 hours.
+  With the deploy disabled nothing refreshes `public/index` but `npm run index` (after pulling the
+  PCB clone). `GitHub.indexFreshness` + `src/app/IndexNotice.tsx`: on opening (and signing in) the
+  app asks GitHub for the branch heads (the one API request with an index) and shows a notice when
+  the index is behind, or when it can't check (private repo without a token).
 - Screens: `src/app/Home.tsx` (start: top bar + search, project tree, drop zone or the selected
   project's `ProjectDetails.tsx` history; a viewer left for it is parked in `store.parked` and offered
   back), `CommitSwitcher.tsx` (commit pickers + Compare); URL ↔ screen in `src/app/github-open.ts`.
+  "Not the latest" (`newer-commits.ts`: newer commits that changed the project, on the default branch):
+  an amber button by the viewer's commit picker (opens the newest) and a "N newer" badge on GitHub recents.
 - Compare: `?vs=<sha>` on a commit URL. `src/app/compare.ts` loads the second commit on its own parse
   worker into `store.compare`; `src/diff/diff.ts` (pure) finds changed files by blob sha and changed PCB
   objects / SCH record groups by fingerprint. Views read their project through `src/app/pane.ts`
   (`PaneContext`: data, diff flag, red/green mark, viewport `ViewLink`s), so `src/shell/DiffArea.tsx`
-  shows two side by side with one shared layers panel. Changed polygon pours are counted, not painted.
+  shows two side by side (mode "Both") with one shared layers panel. Marks (`src/app/use-deltas.ts`, in
+  Viewer) go on the commit SHOWN, against the other: Primary and Both mark A, Secondary marks B; green =
+  only in it, red = only in the other (drawn where the other has it). Doc bar (`DeltaBar.tsx`, always
+  there while comparing): status / "N changes" list, No deltas / Deltas / Deltas only (`store.deltas`).
+  Part outlines follow the layer view by side. PCB compares ARTWORK, not objects (`src/diff/artwork.ts`, on `artwork.worker.ts`;
+  Clipper side `artworkDifference` in `board-geometry.ts`): per layer the merged copper minus drills,
+  mask openings, silk/paste/mech, drills, board shape; regions under 1 mil mean width dropped. A part
+  moved/added/removed (matched by source id) is its outline, its own objects left out. Copper layers are
+  paired by NAME (a restack renumbers keys; same key + other name = another layer unless most objects
+  match); a layer in one board only is one change. Pieces gathered within 25 mil into areas no larger
+  than 300 mil (`ARTWORK_CELL`; big pieces split by grid cell); "N changes" lists them, zooms both.
+  Changed objects only say where to look; re-poured pours only where the poured copper differs.
+  Blocks moved together (`src/diff/moves.ts`, pure): items in one commit only, keyed by shape relative to
+  their own position, vote for their offset; the biggest offset first, split by place, >= 3 items (>= 8 with
+  no part: via grids line up by chance). PCB: matched LAYER BY LAYER (a block is on one layer, shown only
+  with it): loose objects + shifted parts (same turn/side, on their side copper layer); vias on Multi-Layer.
+  Drawn as one box here, dashed box there, arrow. SCH: record markup made position-relative by `sch-moves.ts`.
 - `src/source/` project sources (folder, dropped entries, zip). `src/model/` hierarchy, project load,
   per-sheet connectivity, project net compile (`compile.ts`). `src/parse/` altiumts wrappers, the parse
   worker (`parse.worker.ts` via Comlink) and `project-data.ts` (sheets + compile + board, built once).
 - `src/sch/` schematic view: vendored altiumts SVG renderer (`render/`, MIT, heavily extended),
-  click/hover (`interaction.ts`, `sheet-scene.ts`), port menu.
+  click/hover (`interaction.ts`, `sheet-scene.ts`), popups (`PortMenu.tsx`: `SchPopup` + the sheets a
+  net reaches, on a click on a net/port/entry; `PartCard.tsx`: right-click on a part), per-instance
+  texts and net colours written into the SVG (`sheet-text.ts`, shared with the PDF). Net labels are
+  moved last in `prepare-svg.ts` (drawn over wires/buses). `pdf/`: Export PDF (doc bar, SCH tab;
+  `SchPdfDialog.tsx` settings in `options.ts`: net colours (remembered), physical ("pages", always the
+  default) or logical ("grouped"); jsPDF + svg2pdf, lazy): physical = one page per sheet instance in
+  hierarchy order; logical = one page per schematic DOCUMENT (placed by REPEAT or by several sheet
+  symbols alike): designators and net labels written as what the instances share + an orange italic *
+  (`writeWildcardNames`, `wildcard` in `channel-note.ts`: R1_CAN0/1/2 -> R1_CAN*), under a band saying
+  what * is per instance; links and parts/nets of a shared page go to its first instance's. Text in
+  styled pieces is laid out piece by piece (`layOutPieces`); reset jsPDF's font before svg2pdf (it
+  inherits whatever font measuring left, e.g. italic). The sheets' own fonts embedded
+  from this computer (`local-fonts.ts`, `queryLocalFonts` asked straight from the click), else standard
+  PDF fonts (`svg-for-pdf.ts`: baselines, overlines, CP1252); links port↔entry↔symbol (`links.ts`,
+  corpus-checked). A click on a part / wire run / label / power port runs PDF JavaScript
+  (`click-menus.ts`; link order: parts, nets, then ports on top): app.popUpMenu of the part's details
+  (`part-facts.ts`, shared with the card) or of the sheets a net is on, each a named /FitR destination
+  (catalog /Dests) zoomed to the net. Acrobat and Reader only; Chrome's viewer ignores JavaScript link
+  actions (tested: also Altium's own PDFs). jsPDF writes no JavaScript links: placeholder URI links are
+  rewritten in the finished file at equal length. No parts/nets list pages (the owner did not want them). Blankets (record 225, in the
+  Additional stream like harnesses) are drawn by `render-harness.ts`. Title-block expressions (=Copy(DocumentName, 1, ...), 'Sheet ' + SheetNumber) are
+  evaluated in `render/special-string-expression.ts`; the app supplies =VariantName and the commit.
 - `src/pcb/` PCB view: `scene.ts` (board → shapes per layer, worker side), `layers.ts` (layer
   names/colours/order), `draw.ts` (Canvas2D renderer), `labels.ts` (net labels), `hit.ts`,
   `selection.ts` (selection ↔ board objects), `nets.ts` (routed length, layers used), `PcbView.tsx`,
@@ -88,8 +132,12 @@ npm run index            # the GitHub index from the local PCB clone, into publi
 ## Must-know facts (each cost real debugging)
 - Net names / connectivity: see the `compile.ts` header. Verified exact on Cubli: every PCB net's pads ↔
   one compiled net, all 286 names. Components link to the board by their source path
-  (`\1OCQKBGNW\SRADDCIC\BHDUXFNR`, channel index prefixed for REPEAT); **PCB designators repeat across
-  channels** (R5_ESC ×3) — always show the compiled designator (R5_ESC_2).
+  (`\1OCQKBGNW\SRADDCIC\BHDUXFNR`, channel index prefixed for REPEAT). **Show physical designators everywhere** (R5_ESC_2,
+  TVS1_CAN0); the logical one (R5_ESC, TVS1) only as an aside in the inspector. A PCB part record holds
+  only the logical SOURCEDESIGNATOR (repeats across channels); the physical one is the text of its
+  designator string (`physicalDesignators` in extract-pcb.ts). With a board, compile takes those by
+  source path (the channel format misses sheets placed by several sheet symbols, and boards annotated on
+  their own); the schematic view writes each instance's onto its designator texts.
 - PCB layer colours are not in the file: the default scheme keyed by the layer's V7 identity (GND 1 is
   Mid-Layer 3 → green). Stack order from the V9 stack. See `layers.ts`.
 - Custom-shaped pads: the pad record is a 1 mil placeholder; the copper is a region whose PADINDEX is the

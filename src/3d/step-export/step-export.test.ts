@@ -1,6 +1,6 @@
 import { expect, test } from "vitest"
 import occtFactory from "occt-import-js"
-import { partColoursToBodies, renumber, stepEntities, stepRoots, withItem } from "./step-file"
+import { partColoursToBodies, renumber, stepEntities, stepRoots, tagProducts, withItem } from "./step-file"
 import { num, StepWriter } from "./step-writer"
 
 const MODEL = [
@@ -77,6 +77,25 @@ test("a colour on a whole part moves to the bodies without their own, so it neve
 	// A part colour also used some other way is left alone.
 	const other = model.replace("ENDSEC;", "#60=DRAUGHTING_CALLOUT('',(#45));\nENDSEC;")
 	expect(partColoursToBodies(stepEntities(other))).toEqual(stepEntities(other))
+})
+
+test("a model's products are named with its tag, products named alike counted apart", () => {
+	const model = [
+		"DATA;",
+		"#1=PRODUCT('Mid Body','Mid Body','',(#9));",
+		"#2=PRODUCT ( 'Mid Body', 'Mid Body', '', ( #9 ) );",
+		"#3=PRODUCT('','','',(#9));",
+		"#4=PRODUCT('it''s','x','',(#9));",
+		"#5=PRODUCT_DEFINITION('design','',#6,#7);",
+		"ENDSEC;",
+	].join("\n")
+	expect(tagProducts(stepEntities(model), "a1b2c3").map(e => e.body)).toEqual([
+		"PRODUCT('Mid Body a1b2c3','Mid Body a1b2c3','',(#9))",
+		"PRODUCT('Mid Body 2 a1b2c3','Mid Body 2 a1b2c3','',( #9 ))",
+		"PRODUCT('a1b2c3','a1b2c3','',(#9))",
+		"PRODUCT('it''s a1b2c3','x a1b2c3','',(#9))",
+		"PRODUCT_DEFINITION('design','',#6,#7)",
+	])
 })
 
 test("STEP reals always carry a decimal point", () => {

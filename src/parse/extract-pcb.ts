@@ -5,7 +5,8 @@ import { libraryItem } from "../model/library-item"
 import { extractStackup, type StackupLayer } from "../pcb/stackup"
 
 export interface PcbComponent {
-	designator: string
+	designator: string // physical: one per part, its channel's (TVS1_CAN1)
+	logicalDesignator: string // as on the schematic sheet (TVS1), shared by every channel
 	x: number // mm from the board origin
 	y: number
 	rotation: number
@@ -53,6 +54,20 @@ export function parsePcb(bytes: Uint8Array): AltiumBinaryPcbDoc {
 	return document
 }
 
+// Each part's physical designator, by its place in the board's list: the text of its designator string
+// (the part record keeps only the logical one, the same in every channel), else the logical one.
+export function physicalDesignators(doc: AltiumBinaryPcbDoc): string[] {
+	const d = doc as AltiumBinaryPcbDoc & Record<string, any>
+	const out: string[] = (d.components as any[]).map(c => c.designator ?? "")
+	for (const t of d.texts as any[]) {
+		if (t.get?.("DESIGNATOR") !== "TRUE") continue
+		const c = Number(t.get("COMPONENT"))
+		const text: string = t.text ?? ""
+		if (Number.isInteger(c) && c < out.length && text && !text.startsWith(".")) out[c] = text
+	}
+	return out
+}
+
 export function extractPcb(source: Uint8Array | AltiumBinaryPcbDoc): PcbData {
 	const document = source instanceof Uint8Array ? parsePcb(source) : source
 	if (!(document instanceof AltiumBinaryPcbDoc)) throw new Error("Not a PCB document")
@@ -84,8 +99,10 @@ export function extractPcb(source: Uint8Array | AltiumBinaryPcbDoc): PcbData {
 		return (net?.items as any[] | undefined)?.find(i => i.key === "NAME")?.value as string | undefined
 	}
 
-	const components: PcbComponent[] = doc.components.map((c: any) => ({
-		designator: c.designator ?? "",
+	const physical = physicalDesignators(document)
+	const components: PcbComponent[] = doc.components.map((c: any, i: number) => ({
+		designator: physical[i] ?? "",
+		logicalDesignator: c.designator ?? "",
 		x: (mils(c.get?.("X")) - originX) * MIL_TO_MM,
 		y: (mils(c.get?.("Y")) - originY) * MIL_TO_MM,
 		rotation: Number.parseFloat(c.get?.("ROTATION") ?? "0") || 0,

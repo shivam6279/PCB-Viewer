@@ -62,7 +62,7 @@ test("clicks pick pads and vias first, then copper tracks, then the component", 
 			obj({ kind: "pad", layer: "TOP", net: "A", component: 0, prims: [{ t: "circle", x: 100, y: 0, r: 20 }] }),
 			obj({ kind: "track", layer: "TOPOVERLAY", component: 0, prims: [{ t: "seg", x1: 80, y1: 40, x2: 160, y2: 40, w: 5 }] }),
 		],
-		[{ designator: "R1", sourceUniqueId: "\\R", footprint: "", footprintDescription: "", comment: "", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
+		[{ designator: "R1", logicalDesignator: "R1", sourceUniqueId: "\\R", footprint: "", footprintDescription: "", comment: "", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
 	)
 	const idx = buildIndex(s)
 	const opts = { tolerance: 1, isShown: () => true, current: "TOP", side: "top" as const }
@@ -85,7 +85,7 @@ test("the stack under a point reaches what a part covers; double-click finds the
 			obj({ kind: "region", layer: "BOTTOM", net: "GND", pour: true, prims: [square(0, -100, 300, 100)], bbox: [0, -100, 300, 100] }),
 			obj({ kind: "track", layer: "TOP", net: "SCL", prims: [{ t: "seg", x1: 0, y1: 300, x2: 300, y2: 300, w: 10 }] }),
 		],
-		[{ designator: "R1", sourceUniqueId: "\\R", footprint: "0603", footprintDescription: "", comment: "10k", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
+		[{ designator: "R1", logicalDesignator: "R1", sourceUniqueId: "\\R", footprint: "0603", footprintDescription: "", comment: "10k", x: 120, y: 20, rotation: 0, side: "top", objects: [1, 2], bbox: [80, -20, 160, 45], box: cornersOf([80, -20, 160, 45]), outline: [80, -20, 160, 45] }],
 	)
 	const idx = buildIndex(s)
 	const opts = { tolerance: 1, isShown: () => true, current: "TOP", side: "top" as const }
@@ -159,7 +159,7 @@ test("selections from either view map onto the board", () => {
 			obj({ kind: "pad", layer: "TOP", net: "VIN_1", component: 0, prims: [{ t: "circle", x: 0, y: 0, r: 5 }] }),
 			obj({ kind: "track", layer: "TOP", net: "VIN_1", prims: [{ t: "seg", x1: 0, y1: 0, x2: 50, y2: 0, w: 5 }] }),
 		],
-		[{ designator: "C1", sourceUniqueId: "\\1SYM\\C", footprint: "", footprintDescription: "", comment: "", x: 0, y: 0, rotation: 0, side: "top", objects: [0], bbox: [-5, -5, 5, 5], box: cornersOf([-5, -5, 5, 5]), outline: [-5, -5, 5, 5] }],
+		[{ designator: "C1", logicalDesignator: "C1", sourceUniqueId: "\\1SYM\\C", footprint: "", footprintDescription: "", comment: "", x: 0, y: 0, rotation: 0, side: "top", objects: [0], bbox: [-5, -5, 5, 5], box: cornersOf([-5, -5, 5, 5]), outline: [-5, -5, 5, 5] }],
 	)
 	const compiled = {
 		nets: [{ id: 0, netName: "VIN", physicalName: "VIN_1", names: [], occurrences: [], pins: [] }],

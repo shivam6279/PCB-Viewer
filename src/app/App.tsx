@@ -7,6 +7,7 @@ import { useAppStore } from "./store"
 import { Home } from "./Home"
 import { ProjectPicker } from "./ProjectPicker"
 import { Viewer } from "./Viewer"
+import { IndexNotice } from "./IndexNotice"
 
 export default function App() {
 	const kind = useAppStore(s => s.screen.kind)
@@ -44,6 +45,7 @@ export default function App() {
 				{(kind === "viewer" || hasParked) && <Viewer />}
 			</div>
 			{front}
+			<IndexNotice />
 		</>
 	)
 }

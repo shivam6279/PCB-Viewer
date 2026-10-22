@@ -66,6 +66,24 @@ test("collapsing a node hides its children", () => {
 	expect(screen.queryByText("ESC.SchDoc (U_ESC1)")).toBeNull()
 })
 
+test("a sheet placed several times is one row; its channels open below it, each with its sub-sheets", () => {
+	const ch = (n: number) => ({
+		id: `Top.SchDoc/U_ESC${n}`, label: `ESC.SchDoc (U_ESC${n})`, docPath: "ESC.SchDoc", fileName: "ESC.SchDoc", designator: `U_ESC${n}`, displayDesignator: `U_ESC${n}`, channel: n, cyclic: false,
+		children: [{ id: `Top.SchDoc/U_ESC${n}/U_MCU`, label: `MCU.SchDoc (U_MCU${n})`, docPath: "MCU.SchDoc", fileName: "MCU.SchDoc", designator: "U_MCU", displayDesignator: `U_MCU${n}`, channel: null, cyclic: false, children: [] }],
+	})
+	const multi = { ...project, hierarchy: [{ ...project.hierarchy[0]!, children: [ch(1), ch(2), ch(3)] }] }
+	const onSelectSheet = vi.fn()
+	render(<ProjectTree project={multi} activeSheetId="Top.SchDoc" activePcbPath={null} onSelectSheet={onSelectSheet} onSelectPcb={vi.fn()} />)
+	expect(screen.getByText("ESC.SchDoc")).toBeTruthy()
+	expect(screen.getByText("×3")).toBeTruthy()
+	expect(screen.queryByText("U_ESC2")).toBeNull() // closed until opened
+	fireEvent.click(screen.getByLabelText("Expand ESC.SchDoc"))
+	for (const n of [1, 2, 3]) expect(screen.getByText(`CH ${n}`)).toBeTruthy()
+	expect(screen.getByText("MCU.SchDoc (U_MCU2)")).toBeTruthy()
+	fireEvent.click(screen.getByText("U_ESC2"))
+	expect(onSelectSheet).toHaveBeenCalledWith("Top.SchDoc/U_ESC2")
+})
+
 test("the Variants folder lists [No Variations] and each variant, the shown one ticked", () => {
 	const onSelectVariant = vi.fn()
 	const withVariants = { ...project, variants: [{ name: "Main", notFitted: [] }, { name: "Lite", notFitted: [] }] }

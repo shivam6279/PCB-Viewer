@@ -66,6 +66,7 @@ export function buildProjectData(input: ProjectDataInput): ProjectData {
 		sheets,
 		designatorFormat: input.designatorFormat,
 		padNets: pcb ? new Map(pcb.padNets) : undefined,
+		boardDesignators: pcb ? new Map(pcb.components.filter(c => c.sourceUniqueId && c.designator).map(c => [c.sourceUniqueId, c.designator])) : undefined,
 	})
 	return { compiled, sheets: Object.fromEntries(sheets), pcb, errors, wireColors: wireColors(input, compiled, sheets), netColors: boardNetColors(input, compiled), bom: bomOf(input, compiled, pcb, errors) }
 }

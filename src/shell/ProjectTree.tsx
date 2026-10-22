@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react"
 import { Check, ChevronDown, ChevronRight, PanelLeftClose, TriangleAlert } from "lucide-react"
-import type { HierarchyNode } from "../model/hierarchy"
+import { flattenHierarchy, type HierarchyNode } from "../model/hierarchy"
 import type { DocEntry, ProjectSummary } from "../model/load-project"
 import type { FileChange } from "../diff/diff"
 import { DocIcon, FolderIcon, otherDocKind, type DocKind } from "../app/tree-icons"
@@ -32,13 +32,18 @@ export interface ProjectTreeProps {
 
 export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectSheet, onSelectPcb, nets, activeNetId, onSelectNet, changes, activeVariant = null, onSelectVariant, onCollapse }: ProjectTreeProps) {
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set(["nets"]))
-	const toggle = (id: string) =>
-		setCollapsed(prev => {
-			const next = new Set(prev)
-			if (next.has(id)) next.delete(id)
-			else next.add(id)
-			return next
-		})
+	// A sheet placed several times (a multi-channel sheet) is one row whose channels open below it,
+	// closed until opened.
+	const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
+	const flip = (set: Set<string>, id: string) => {
+		const next = new Set(set)
+		if (next.has(id)) next.delete(id)
+		else next.add(id)
+		return next
+	}
+	const isGroup = (id: string) => id.startsWith("channels:")
+	const isOpen = (id: string) => (isGroup(id) ? openGroups.has(id) : !collapsed.has(id))
+	const toggle = (id: string) => (isGroup(id) ? setOpenGroups(prev => flip(prev, id)) : setCollapsed(prev => flip(prev, id)))
 	const docFor = (path: string | null) => (path ? project.documents.find(d => d.path === path) : undefined)
 
 	const row = (key: string, depth: number, label: string, icon: string, opts: {
@@ -49,9 +54,12 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 		onClick?: () => void
 		docPath?: string | null
 		checked?: boolean
+		channels?: number // a multi-channel sheet: how many times it is placed
+		channel?: number // one channel of it
+		change?: FileChange // its badge, when not its own file's
 	}): ReactNode => {
-		const change = opts.docPath ? changes?.get(opts.docPath) : undefined
-		const open = !collapsed.has(key)
+		const change = opts.change ?? (opts.docPath ? changes?.get(opts.docPath) : undefined)
+		const open = isOpen(key)
 		return (
 			<div
 				key={key}
@@ -74,8 +82,26 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 				) : (
 					<span className="tree-chevron" />
 				)}
-				{icon === "folder" ? <FolderIcon open={open} /> : icon === "net" ? <span className="tree-icon net" /> : <DocIcon kind={icon as DocKind} />}
+				{icon === "folder" ? (
+					<FolderIcon open={open} />
+				) : icon === "net" ? (
+					<span className="tree-icon net" />
+				) : opts.channels !== undefined ? (
+					<span className="tree-icon-stack" aria-hidden>
+						<DocIcon kind="sch" />
+						<DocIcon kind="sch" />
+					</span>
+				) : opts.channel !== undefined ? (
+					<span className="tree-channel">CH {opts.channel}</span>
+				) : (
+					<DocIcon kind={icon as DocKind} />
+				)}
 				<span className="tree-label">{label}</span>
+				{opts.channels !== undefined && (
+					<span className="tree-channels" title={`One sheet placed ${opts.channels} times: ${opts.channels} channels`}>
+						×{opts.channels}
+					</span>
+				)}
 				{change && (
 					<span className={`tree-change ${change}`} aria-label={CHANGE_WORD[change]}>
 						{CHANGE_LETTER[change]}
@@ -94,19 +120,53 @@ export function ProjectTree({ project, activeSheetId, activePcbPath, onSelectShe
 	const problemOf = (doc: DocEntry | undefined, docPath: string | null) =>
 		docPath === null || (doc && !doc.exists) ? "File not found" : (doc?.error ?? null)
 
-	const sheetRows = (node: HierarchyNode, depth: number): ReactNode[] => {
+	const sheetRows = (node: HierarchyNode, depth: number, channel?: number): ReactNode[] => {
 		const doc = docFor(node.docPath)
 		const out = [
-			row(node.id, depth, node.label, "sch", {
+			row(node.id, depth, channel === undefined ? node.label : node.displayDesignator, "sch", {
 				hasChildren: node.children.length > 0,
 				active: node.id === activeSheetId,
 				problem: node.cyclic ? "Sheet hierarchy loops back here" : problemOf(doc, node.docPath),
 				onClick: () => onSelectSheet(node.id),
 				docPath: node.docPath,
+				channel,
 			}),
 		]
-		if (!collapsed.has(node.id)) for (const c of node.children) out.push(...sheetRows(c, depth + 1))
+		if (!collapsed.has(node.id)) out.push(...childRows(node, depth + 1))
 		return out
+	}
+	// A node's sub-sheets; one file placed several times under it is one row, its channels below.
+	const childRows = (node: HierarchyNode, depth: number): ReactNode[] => {
+		const groups = new Map<string, HierarchyNode[]>()
+		for (const c of node.children) {
+			const k = c.docPath ?? c.fileName
+			groups.set(k, [...(groups.get(k) ?? []), c])
+		}
+		return [...groups.values()].flatMap(list => {
+			const first = list[0]!
+			if (list.length === 1) return sheetRows(first, depth)
+			const key = `channels:${node.id}/${first.docPath ?? first.fileName}`
+			const within = list.some(c => activeSheetId === c.id || activeSheetId?.startsWith(`${c.id}/`))
+			const out = [
+				row(key, depth, first.fileName, "sch", {
+					hasChildren: true,
+					active: within && !openGroups.has(key),
+					problem: problemOf(docFor(first.docPath), first.docPath),
+					// Opens its first channel (and lists the channels); once inside, folds and unfolds.
+					onClick: () => {
+						if (within) return toggle(key)
+						onSelectSheet(first.id)
+						setOpenGroups(prev => new Set(prev).add(key))
+					},
+					docPath: first.docPath,
+					channels: list.length,
+					// Folded, it still says when a sheet in it changed.
+					change: flattenHierarchy(list).some(n => n.docPath && changes?.has(n.docPath)) ? (changes?.get(first.docPath ?? "") ?? "modified") : undefined,
+				}),
+			]
+			if (openGroups.has(key)) list.forEach((c, k) => out.push(...sheetRows(c, depth + 1, c.channel ?? k + 1)))
+			return out
+		})
 	}
 
 	const pcbs = project.documents.filter(d => d.kind === "pcb")

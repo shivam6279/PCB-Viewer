@@ -45,6 +45,10 @@ export type ViewerScreen = Extract<Screen, { kind: "viewer" }>
 
 export type CompareMode = "primary" | "secondary" | "diff"
 
+// Diff: how the differences show on the primary. none: both views plain; deltas: marked over the
+// primary as drawn; only: marked over the primary greyed.
+export type DeltaMode = "none" | "deltas" | "only"
+
 // A second commit of the open project, shown instead of it (secondary) or beside it (diff). It has a
 // parse worker of its own: a worker holds one project's compiled state.
 export interface Compare {
@@ -87,6 +91,8 @@ interface AppState {
 	// The ruler (PCB and 3D views): on or off, the measurements made on the open board, what points
 	// snap to (remembered in this browser) and the kind of measurement the next one starts as.
 	measuring: boolean
+	deltas: DeltaMode
+	setDeltas(mode: DeltaMode): void
 	netColors: NetColorViews // whether each view draws nets in the project's net colours (N)
 	measures: Measure[]
 	snapKinds: Set<SnapKind>
@@ -201,6 +207,10 @@ export const useAppStore = create<AppState>((set, get) => {
 		view3dProjection: storedProjection(),
 		view3dHidden: new Set(),
 		measuring: false,
+		deltas: "deltas",
+		setDeltas(deltas) {
+			set({ deltas })
+		},
 		netColors: storedNetColors(),
 		measures: [],
 		snapKinds: storedSnaps(),

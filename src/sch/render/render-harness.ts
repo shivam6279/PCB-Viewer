@@ -27,6 +27,7 @@ export function renderHarnessRecords(
     const record = records[i]!
     const identity = `data-i="${ADDITIONAL_BASE + i}" data-k="${record.recordKind}"`
     if (record.recordKind === "218") out.push(`<g ${identity}>${renderHarnessWire(record, viewport)}</g>`)
+    if (record.recordKind === "225") out.push(`<g ${identity}>${renderBlanket(record, viewport)}</g>`)
     if (record.recordKind !== "215") continue
     const children = records.filter((child, j) => {
       if (child.recordKind !== "216" && child.recordKind !== "217") return false
@@ -119,6 +120,25 @@ function renderHarnessWire(record: AltiumRecord, viewport: SvgViewport): string 
     `<polyline points="${svgPoints}" fill="none" stroke="${lighten(color, 0x1e)}" stroke-width="5.1" stroke-linecap="round" stroke-linejoin="round"/>` +
     ticks.join("") +
     `<polyline points="${svgPoints}" fill="none" stroke="${color}" stroke-width="1"/>` +
+    `</g>`
+  )
+}
+
+// Dash patterns (sheet units) by line style: 0 solid, 1 dashed, 2 dotted, 3 dash-dotted.
+const DASHES = ["", "5 3", "1 2", "5 2 1 2"]
+
+// A blanket: an outline whose directives (the parameter set on its edge) apply to every net inside.
+// Drawn as its polygon, dashed by default, filled only when it is solid.
+function renderBlanket(record: AltiumRecord, viewport: SvgViewport): string {
+  const points = getSchematicIndexedPoints(record)
+  if (points.length < 3) return ""
+  const style = readSchematicInteger(record.getCaseInsensitive("LINESTYLEEXT") ?? record.getCaseInsensitive("LINESTYLE"), 1)
+  const width = Math.max(1, LINE_WIDTHS[readSchematicInteger(record.getCaseInsensitive("LINEWIDTH"), 0)] ?? 1)
+  const solid = record.getCaseInsensitive("ISSOLID") === "T"
+  const dash = DASHES[style] ? ` stroke-dasharray="${DASHES[style]}"` : ""
+  return (
+    `<g data-record="225">` +
+    `<polygon points="${pointsToSvg(points, viewport)}" fill="${solid ? altiumColorToCss(record.getCaseInsensitive("AREACOLOR"), "#ffffff") : "none"}"${solid ? ` fill-opacity="${record.getCaseInsensitive("TRANSPARENT") === "T" ? 0.5 : 1}"` : ""} stroke="${altiumColorToCss(record.getCaseInsensitive("COLOR"), "#ff0000")}" stroke-width="${n(width)}"${dash}/>` +
     `</g>`
   )
 }

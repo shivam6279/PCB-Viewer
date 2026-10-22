@@ -60,6 +60,7 @@ export function Inspector({ project, data, selection, activeSheetId, parser, tab
 				<aside className="inspector" aria-label="Component properties">
 					<Head title={c.designator} onClose={close} views={["PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => (v === "PCB" ? useAppStore.getState().showOnPcb(selection) : v === "3D" ? useAppStore.getState().showOn3d(selection) : useAppStore.getState().setTab("bom"))} />
 					{c.comment && <div className="inspector-heading">{c.comment}</div>}
+					<LogicalDesignator designator={c.designator} logical={c.logicalDesignator} />
 					{tab === "3d" && <HideIn3d part={partKey(scene, selection.index)} />}
 					<Section title="Footprint">
 						<FootprintPicture scene={scene} index={selection.index} label={`Footprint ${c.footprint}`} />
@@ -150,14 +151,8 @@ function NetPanel({ tab, project, compiled, activeSheetId, pcb, net, selection, 
 		<aside className="inspector" aria-label="Net properties">
 			<Head title={net.physicalName} onClose={onClose} views={["SCH", "PCB", "3D"]} active={tabLabel(tab)} onView={v => crossProbe(v, selection, compiled, activeSheetId)} />
 			<dl className="inspector-props">
-				{net.physicalName !== net.netName && (
-					<>
-						<dt>Physical Name</dt>
-						<dd title={net.physicalName}>{net.physicalName}</dd>
-					</>
-				)}
 				<dt>Net Name</dt>
-				<dd title={net.netName}>{net.netName}</dd>
+				<dd title={net.physicalName}>{net.physicalName}</dd>
 				{pcbNet && (
 					<>
 						<dt>Routed Length</dt>
@@ -174,6 +169,24 @@ function NetPanel({ tab, project, compiled, activeSheetId, pcb, net, selection, 
 					</div>
 				))}
 			</Section>
+			{net.aliases.length > 0 && (
+				<Section title="Aliases">
+					{net.aliases.map(a => (
+						<div key={a.name} className="inspector-alias">
+							<div className="inspector-row" title={a.name}>
+								<span className="grow">{a.name}</span>
+							</div>
+							{nodes.filter(n => a.instanceIds.includes(n.id)).map(n => (
+								<div key={n.id} className={`inspector-row link sub${current(n) ? " current" : ""}`} onClick={() => jump(n)}>
+									<DocIcon kind="sch" />
+									<span className="grow">{instanceLabel(n)}</span>
+									{current(n) && <Check size={14} className="tick" />}
+								</div>
+							))}
+						</div>
+					))}
+				</Section>
+			)}
 			<LayersUsed pcb={pcb} name={net.physicalName} />
 		</aside>
 	)
@@ -377,6 +390,13 @@ function Location({ scene, x, y, rotation, layer }: { scene: PcbScene; x: number
 const mm = (mils: number) => `${(mils * MM).toFixed(3)}mm`
 
 // A pad, via, track or arc clicked on the board.
+// A part's designator on the sheet it is drawn on, shared by every channel of that sheet (TVS1 for
+// TVS1_CAN0 and TVS1_CAN1): shown only when it differs from the physical one.
+function LogicalDesignator({ designator, logical }: { designator: string; logical: string }) {
+	if (!logical || logical === designator) return null
+	return <div className="inspector-desc">Logical designator: {logical}</div>
+}
+
 function ObjectPanel({ tab, compiled, scene, pcb, object: o, onClose }: Views & { scene: PcbScene; pcb: PcbData | null; object: PcbObject; onClose(): void }) {
 	const component = o.component !== null ? scene.components[o.component] : undefined
 	const routed = o.net ? pcb?.nets.find(n => n.name.toUpperCase() === o.net!.toUpperCase())?.routedLength : undefined
@@ -384,7 +404,6 @@ function ObjectPanel({ tab, compiled, scene, pcb, object: o, onClose }: Views & 
 	const isPad = o.kind === "pad" && o.pad
 	// SCH for a pad shows its component on the schematic with the pad's net selected.
 	const compiledComponent = component ? compiled.components.find(c => c.uniquePath === component.sourceUniqueId) : undefined
-	// The schematic's channel designator (J1_ESC_2): board designators can repeat across channels.
 	const designator = compiledComponent?.designator ?? component?.designator ?? ""
 	const kindName = o.kind === "via" ? "Via" : o.kind === "arc" ? "Arc" : o.kind === "fill" ? "Fill" : o.kind === "region" ? (o.pour ? "Polygon" : "Region") : "Track"
 	const title = isPad ? `${designator}-${o.pad!.name}` : (o.net ?? kindName)
@@ -475,13 +494,12 @@ function ComponentPanel({ tab, compiled, activeSheetId, pcb, scene, component, f
 	}
 	const parameters = component.parameters.filter(p => !LINK.test(p.name))
 	const params = more ? parameters : parameters.slice(0, PARAMS_SHOWN)
-	const title =
-		tab === "pcb" && component.logicalDesignator !== component.designator ? `${component.designator} (${component.logicalDesignator})` : component.designator
 	return (
 		<aside className="inspector" aria-label="Component properties">
-			<Head title={title} onClose={onClose} views={["SCH", "PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => crossProbe(v, selection, compiled, activeSheetId)} />
+			<Head title={component.designator} onClose={onClose} views={["SCH", "PCB", "3D", "BOM"]} active={tabLabel(tab)} onView={v => crossProbe(v, selection, compiled, activeSheetId)} />
 			{component.comment && <div className="inspector-heading">{component.comment}</div>}
 			{component.description && <div className="inspector-desc">{component.description}</div>}
+			<LogicalDesignator designator={component.designator} logical={component.logicalDesignator} />
 			{tab === "3d" && scene && placedIndex >= 0 && <HideIn3d part={partKey(scene, placedIndex)} />}
 			{component.footprint && (
 				<Section title="Footprint">

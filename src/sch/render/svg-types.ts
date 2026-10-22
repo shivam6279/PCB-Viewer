@@ -86,6 +86,8 @@ export interface AltiumSheetSvgOptions extends AltiumSvgRenderOptions {
   projectName?: string
   /** Selected project variant whose parameters override document parameters. */
   variantName?: string
+  /** Values only the caller knows (commit, modified date), by parameter name. */
+  parameters?: Readonly<Record<string, string>>
   showBorder?: boolean
   /** Altium project net colours, keyed by lower-cased net name, as CSS colours. */
   netColors?: Record<string, string>

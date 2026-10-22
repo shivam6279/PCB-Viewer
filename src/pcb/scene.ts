@@ -5,6 +5,7 @@
 import { getPcbRegionGeometry, type AltiumBinaryPcbDoc } from "altiumts"
 import { describeLayer, type PcbLayer } from "./layers"
 import { STROKE_GLYPHS } from "./stroke-font"
+import { physicalDesignators } from "../parse/extract-pcb"
 
 export type Prim =
 	| { t: "seg"; x1: number; y1: number; x2: number; y2: number; w: number } // round-capped stroke
@@ -49,7 +50,8 @@ export interface PcbObject {
 }
 
 export interface PcbSceneComponent {
-	designator: string
+	designator: string // physical (TVS1_CAN1): see physicalDesignators
+	logicalDesignator: string // as on the schematic sheet (TVS1)
 	sourceUniqueId: string
 	footprint: string
 	footprintDescription: string
@@ -109,8 +111,10 @@ export function buildPcbScene(doc: AltiumBinaryPcbDoc): PcbScene {
 		return Number.isInteger(c) && c !== NO_INDEX && c < d.components.length ? c : null
 	}
 
-	const components: PcbSceneComponent[] = (d.components as any[]).map(c => ({
-		designator: c.designator ?? c.get?.("SOURCEDESIGNATOR") ?? "",
+	const physical = physicalDesignators(doc)
+	const components: PcbSceneComponent[] = (d.components as any[]).map((c, i) => ({
+		designator: physical[i] ?? "",
+		logicalDesignator: c.designator ?? c.get?.("SOURCEDESIGNATOR") ?? "",
 		sourceUniqueId: c.sourceUniqueId ?? "",
 		footprint: c.footprint ?? c.get?.("PATTERN") ?? "",
 		footprintDescription: c.get?.("FOOTPRINTDESCRIPTION") ?? "",

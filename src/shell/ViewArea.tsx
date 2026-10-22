@@ -11,6 +11,7 @@ import { whenIdle } from "../app/idle"
 import { stripExt } from "../source/paths"
 import { boardKey } from "../3d/board-key"
 import { usePane, usePaneData } from "../app/pane"
+import { ChannelTabs } from "./ChannelTabs"
 
 // three.js and the STEP importer load in their own chunk (fetched in the background, see Viewer).
 export const loadView3d = () => import("../3d/View3d").then(m => ({ default: m.View3d }))
@@ -45,8 +46,9 @@ export function ViewArea({ source, parser, project, tab, activeSheetId, activePc
 	return (
 		<section className="view-area" aria-label={`${view} view`}>
 			{opened.has("sch") && (
-				<div className={pane("sch")}>
+				<div className={`${pane("sch")} sch-pane`}>
 					{sheet ? <SchematicView key={sheet.id} source={source} project={project} node={sheet} parser={parser} /> : <div className="view-message">No sheet selected</div>}
+					{sheet && <ChannelTabs hierarchy={project.hierarchy} sheet={sheet} onPick={id => useAppStore.getState().selectSheet(id)} />}
 				</div>
 			)}
 			{opened.has("pcb") && (

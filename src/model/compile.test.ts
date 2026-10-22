@@ -81,6 +81,14 @@ test("the net name comes from the highest level; channel nets get the channel su
 	expect(netAt(p, "Top/U_CH2", 1).id).toBe(vin.id)
 })
 
+test("a net's other names are aliases, each with the instances it is written on", () => {
+	const p = compiled()
+	const vin = netAt(p, "Top", 1)
+	expect(vin.physicalName).toBe("VIN")
+	expect(vin.aliases).toEqual([{ name: "IN", instanceIds: ["Top/U_CH1", "Top/U_CH2"] }])
+	expect(netAt(p, "Top", 6).aliases).toEqual([])
+})
+
 test("components get channel designators and remember their logical one", () => {
 	const p = compiled()
 	const c = p.components.find(c => c.instanceId === "Top/U_CH2")!
@@ -142,6 +150,20 @@ test("components carry Altium's source path, which links pins to PCB pads even w
 	expect(p.components.find(c => c.instanceId === "Top/U_CH2")!.designator).toBe("C1_2") // designators stay formatted
 	expect(p.nets[p.netAt["Top/U_CH1"]![6]!]!.physicalName).toBe("LOOP_A")
 	expect(p.nets[p.netAt["Top/U_CH2"]![6]!]!.physicalName).toBe("LOOP_B")
+})
+
+test("a board's own designators name its parts: the physical one per channel, the logical one kept", () => {
+	const p = compileProject({
+		instances,
+		sheets,
+		designatorFormat: "$Component_$ChannelIndex",
+		boardDesignators: new Map([["\\2SYM\\U60", "C1_B"]]),
+	})
+	const c = p.components.find(c => c.instanceId === "Top/U_CH2")!
+	expect(c.designator).toBe("C1_B")
+	expect(c.logicalDesignator).toBe("C1")
+	// A part the board does not have keeps its compiled designator.
+	expect(p.components.find(c => c.instanceId === "Top/U_CH1")!.designator).toBe("C1_1")
 })
 
 test("a label on a harness wire names the harness; a BUNDLE.MEMBER label on a wire joins that member", () => {

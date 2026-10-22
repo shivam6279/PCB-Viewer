@@ -155,7 +155,10 @@ export interface OverlayState {
 	selectedOwner: number | null // selected component on this sheet
 	hoverNet: number[] | null
 	hoverOwner: number | null
-	diff?: { indices: number[]; tone: "removed" | "added" } | null // compare: objects only in this commit
+	// Compare: the records only this commit has (green), and those only the other has, as that one draws
+	// them (red: missing here); dim: everything else faded.
+	// moves: records moved together, as one: their records here, and (dx, dy) to where they are there.
+	diff?: { indices: number[]; ghosts: string[]; moves: { members: number[]; dx: number; dy: number }[]; dim: boolean } | null
 }
 
 // Net objects framed with a lilac box rather than a halo (labels, power ports, ports, entries, harness connectors).
@@ -166,16 +169,35 @@ export function paintOverlay(scene: Scene, state: OverlayState) {
 	overlay.replaceChildren()
 	const selecting = state.selectedNet !== null || state.selectedOwner !== null
 	if (selecting) overlay.appendChild(rect(scene.paper, "sel-dim"))
-	if (state.diff && state.diff.indices.length) {
-		// Everything else fades; what differs is boxed and drawn over in the tone (red / green).
-		overlay.appendChild(rect(scene.paper, "diff-dim"))
+	if (state.diff && (state.diff.indices.length || state.diff.ghosts.length || state.diff.moves.length)) {
+		// What differs is boxed and drawn over: green what only this commit has, red what it lacks.
+		if (state.diff.dim) overlay.appendChild(rect(scene.paper, "diff-dim"))
 		const groups = state.diff.indices.map(i => scene.byIndex.get(i)).filter((g): g is SVGGElement => g !== undefined)
-		for (const g of groups) {
-			const b = unionBox([g])
-			// Padded generously: a change must be findable with the whole sheet in view.
-			if (b) overlay.appendChild(rect(pad(b, 8), `diff-box diff-${state.diff.tone}`))
+		const ghosts = ghostGroups(state.diff.ghosts)
+		const inks = [...groups.map(g => clone(g, "diff-ink diff-added")), ...ghosts.map(g => clone(g, "diff-ink diff-removed"))]
+		const boxes = document.createElementNS(SVG_NS, "g")
+		overlay.appendChild(boxes)
+		for (const ink of inks) overlay.appendChild(ink)
+		// Padded generously: a change must be findable with the whole sheet in view.
+		for (const ink of inks) {
+			const b = unionBox([ink as SVGGraphicsElement])
+			if (b) boxes.appendChild(rect(pad(b, 8), `diff-box ${ink.getAttribute("class")!.split(" ")[1]}`))
 		}
-		for (const g of groups) overlay.appendChild(clone(g, `diff-ink diff-${state.diff.tone}`))
+		// A block moved: a box round it here, a dashed one where it is in the other commit, an arrow between.
+		for (const mv of state.diff.moves) {
+			const b = unionBox(mv.members.map(i => scene.byIndex.get(i)).filter((g): g is SVGGElement => g !== undefined))
+			if (!b) continue
+			const here = pad(b, 4), there = { ...here, x: here.x + mv.dx, y: here.y + mv.dy }
+			boxes.appendChild(rect(there, "diff-move there"))
+			boxes.appendChild(rect(here, "diff-move here"))
+			const line = document.createElementNS(SVG_NS, "line")
+			line.setAttribute("x1", String(there.x + there.w / 2))
+			line.setAttribute("y1", String(there.y + there.h / 2))
+			line.setAttribute("x2", String(here.x + here.w / 2))
+			line.setAttribute("y2", String(here.y + here.h / 2))
+			line.setAttribute("class", "diff-move arrow")
+			boxes.appendChild(line)
+		}
 	}
 
 	if (state.hoverOwner !== null && state.hoverOwner !== state.selectedOwner) {
@@ -204,6 +226,13 @@ function addNet(scene: Scene, objects: number[], cls: string) {
 		drawn.push(clone(g, cls))
 	}
 	scene.overlay.append(...boxes, ...drawn)
+}
+
+// The other commit's record groups, from its markup.
+function ghostGroups(markup: string[]): SVGGElement[] {
+	if (!markup.length) return []
+	const doc = new DOMParser().parseFromString(`<svg xmlns="${SVG_NS}">${markup.join("")}</svg>`, "image/svg+xml")
+	return [...doc.documentElement.children].filter((e): e is SVGGElement => e.localName === "g").map(g => document.importNode(g, true))
 }
 
 function clone(g: SVGGElement, cls: string): SVGElement {

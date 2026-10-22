@@ -1,11 +1,13 @@
 // The STEP export's settings: its own module, so the doc bar's dialog and the store can use them without
 // loading the export (and the 3D geometry code it needs).
 export interface StepExportOptions {
+	onePart: boolean // everything one part (off: an assembly of the board's layers and every part's model)
 	parts: boolean // every part's model
 	copper: boolean // the outer copper layers
 	copperUnderMask: boolean // with the mask: also the copper it covers (off: only what its openings show)
 	platedHoles: boolean // the plating in drilled plated holes
 	mask: boolean // the solder masks, open over the pads
+	maskOneFace: boolean // each mask one face (off: cut into tiles, quicker for CAD to read, the seams drawn as lines)
 	silkscreen: boolean
 	viaHoles: boolean // drill the vias (pad holes are always drilled)
 	quality: StepQuality // how finely the copper, mask and silkscreen's curves are cut
@@ -17,7 +19,7 @@ export const STEP_QUALITIES: StepQuality[] = ["draft", "standard", "fine"]
 // exact whatever the quality.
 export const QUALITY_TOLERANCE: Record<StepQuality, number> = { draft: 1, standard: 0.2, fine: 0.05 }
 
-export const DEFAULT_STEP_OPTIONS: StepExportOptions = { parts: true, copper: true, copperUnderMask: false, platedHoles: true, mask: true, silkscreen: true, viaHoles: false, quality: "fine" }
+export const DEFAULT_STEP_OPTIONS: StepExportOptions = { onePart: true, parts: true, copper: true, copperUnderMask: false, platedHoles: true, mask: true, maskOneFace: true, silkscreen: true, viaHoles: false, quality: "fine" }
 
 // The dialog's settings, remembered in this browser (the last ones exported with).
 export const STEP_OPTIONS_KEY = "view3d.stepExport"
@@ -34,10 +36,12 @@ export function storedStepOptions(): StepExportOptions {
 
 type Toggle = Exclude<keyof StepExportOptions, "quality">
 
-// Whether a setting matters with the others as they are: the copper the mask covers only with both.
-export const choiceApplies = (key: Toggle, o: StepExportOptions) => key !== "copperUnderMask" || (o.copper && o.mask)
+// Whether a setting matters with the others as they are: the copper the mask covers only with both, the
+// mask's one face only with the mask.
+export const choiceApplies = (key: Toggle, o: StepExportOptions) => (key === "copperUnderMask" ? o.copper && o.mask : key === "maskOneFace" ? o.mask : true)
 
 // The settings one click from these: each setting that applies flipped, and the quality either side.
+// (The mask's one face looks the same in a preview: not among them.)
 export function neighbourOptions(o: StepExportOptions): StepExportOptions[] {
 	const out: StepExportOptions[] = []
 	for (const key of ["parts", "copper", "copperUnderMask", "platedHoles", "mask", "silkscreen", "viaHoles"] as const) if (choiceApplies(key, o)) out.push({ ...o, [key]: !o[key] })
@@ -48,7 +52,8 @@ export function neighbourOptions(o: StepExportOptions): StepExportOptions[] {
 
 // The export dialog's preview pictures: one per combination of the settings, rendered once ahead (by
 // scripts/render-step-previews.mjs) and shipped in public/step-previews. Settings that make the same
-// file share one: the copper under the mask only counts with both copper and mask.
+// file share one: the copper under the mask only counts with both copper and mask. The mask as one face
+// or tiles looks the same (the preview board's is never tiled).
 export function stepPreviewName(o: StepExportOptions): string {
 	const bit = (b: boolean) => (b ? 1 : 0)
 	return `p${bit(o.parts)}c${bit(o.copper)}u${bit(o.copper && o.mask && o.copperUnderMask)}h${bit(o.platedHoles)}m${bit(o.mask)}s${bit(o.silkscreen)}v${bit(o.viaHoles)}-${o.quality}`
@@ -60,7 +65,7 @@ export function everyStepOption(): StepExportOptions[] {
 	for (let bits = 0; bits < 128; bits++) {
 		const b = (i: number) => (bits & (1 << i)) !== 0
 		for (const quality of STEP_QUALITIES) {
-			const o = { parts: b(0), copper: b(1), copperUnderMask: b(1) && b(4) && b(2), platedHoles: b(3), mask: b(4), silkscreen: b(5), viaHoles: b(6), quality }
+			const o = { onePart: true, parts: b(0), copper: b(1), copperUnderMask: b(1) && b(4) && b(2), platedHoles: b(3), mask: b(4), maskOneFace: true, silkscreen: b(5), viaHoles: b(6), quality }
 			out.set(stepPreviewName(o), o)
 		}
 	}

@@ -61,3 +61,14 @@ test("a harness port is pointed at both ends", () => {
 	const port = group(render(["|RECORD=18|ALIGNMENT=1|WIDTH=50|LOCATION.X=120|LOCATION.Y=210|COLOR=128|FONTID=1|NAME=I2C|HARNESSTYPE=I2C|HEIGHT=10"]), "18")
 	expect(port).toContain('d="M 120 740 L 125 735 H 165 L 170 740 L 165 745 H 125 Z"')
 })
+
+const BLANKET = (extra = "") =>
+	`|RECORD=225|IndexInSheet=55|OwnerPartId=-1|Location.X=600|Location.Y=570|Corner.X=670|Corner.Y=620|Color=255|AreaColor=16777215|LineStyle=1|LocationCount=4|X1=600|Y1=620|X2=670|Y2=620|X3=670|Y3=570|X4=600|Y4=570|LineStyleExt=1${extra}`
+
+test("a blanket is its outline, dashed in its colour, unfilled unless solid", () => {
+	const b = group(render([], [BLANKET()]), "225")
+	expect(b).toContain('points="600,330 670,330 670,380 600,380"')
+	expect(b).toContain('fill="none" stroke="#ff0000"')
+	expect(b).toContain('stroke-dasharray="5 3"')
+	expect(group(render([], [BLANKET().replace("AreaColor=16777215", "AreaColor=65535|IsSolid=T").replaceAll("LineStyleExt=1", "LineStyleExt=0")]), "225")).toMatch(/fill="#ffff00"[^>]*stroke="#ff0000"(?![^>]*dasharray)/)
+})

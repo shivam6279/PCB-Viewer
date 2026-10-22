@@ -1,9 +1,11 @@
 // Vendored from altiumts v0.0.87 (MIT, (c) tscircuit Inc. — see LICENSE.altiumts). Modified: parameter
-// names may contain spaces ("=Part Number").
+// names may contain spaces ("=Part Number"); expressions (=Copy(DocumentName, 1, 3), ='Sheet ' + SheetNumber)
+// are evaluated; the caller may supply values only it knows (=VersionControl_RevNumber).
 import type { AltiumPrjPcb, AltiumProjectVariant } from "altiumts"
 import type { AltiumSchDoc } from "altiumts"
 import type { AltiumIniSection } from "altiumts"
 import type { AltiumRecord } from "altiumts"
+import { evaluateSpecialString } from "./special-string-expression"
 
 type SchematicParameterName = string
 type SchematicVariantName = string
@@ -38,6 +40,8 @@ export interface ResolveSchematicParameterReferenceInput {
   reference: string
   /** Selected project variant whose parameters override document parameters. */
   variantName?: string
+  /** Values the caller knows (commit, modified date, variant), by parameter name; over the document's. */
+  parameters?: Readonly<Record<string, string>>
 }
 
 interface ResolveParameterInput {
@@ -92,10 +96,11 @@ export function resolveSchematicParameterReferenceWithContext({
   record,
   reference,
   variantName,
+  parameters: known,
 }: ResolveSchematicParameterReferenceInput): string | undefined {
+  if (!reference.startsWith("=")) return undefined
   const match = PARAMETER_REFERENCE.exec(reference)
   const parameterName = match?.[1]
-  if (!parameterName) return undefined
 
   const parameters = new Map<SchematicParameterName, string>()
   if (project) {
@@ -119,6 +124,7 @@ export function resolveSchematicParameterReferenceWithContext({
   if (projectName) parameters.set("projectname", projectName)
   if (documentName) parameters.set("documentname", documentName)
   if (variantName) parameters.set("variantname", variantName)
+  for (const [name, text] of Object.entries(known ?? {})) parameters.set(name.toLowerCase(), text)
   if (record) {
     for (const [name, text] of getSchematicComponentParameters(
       document,
@@ -128,11 +134,10 @@ export function resolveSchematicParameterReferenceWithContext({
     }
   }
 
-  return resolveParameter({
-    parameterName,
-    parameters,
-    visitedParameterNames: new Set(),
-  })
+  const lookup = (name: string) =>
+    resolveParameter({ parameterName: name, parameters, visitedParameterNames: new Set() })
+  if (parameterName) return lookup(parameterName)
+  return evaluateSpecialString(reference.slice(1), lookup)
 }
 
 function applySchematicParameterScope(

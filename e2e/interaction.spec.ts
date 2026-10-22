@@ -18,8 +18,10 @@ async function openCubli(page: Page) {
 	await expect(page.locator('.sch-view[data-status="ready"][data-compiled="true"]')).toBeVisible({ timeout: 60_000 })
 }
 
+// Opens a sheet from the doc bar's sheet picker, which lists every sheet instance.
 async function openSheet(page: Page, label: string) {
-	await page.locator(".sidebar .tree-row", { hasText: label }).first().click()
+	await page.getByRole("button", { name: "Sheet", exact: true }).click()
+	await page.getByRole("option").filter({ hasText: label.replace(".SchDoc", "") }).first().click()
 	const nodeId = await page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")
 	await expect(page.locator(`.sch-view[data-node="${nodeId}"][data-status="ready"][data-compiled="true"]`)).toBeVisible({ timeout: 30_000 })
 	return nodeId
@@ -74,6 +76,64 @@ test("clicking a wire selects its net: highlight on the sheet and the net panel"
 	await expect(panel).toHaveCount(0)
 	await expect(page.locator(".sch-overlay .sel-dim")).toHaveCount(0)
 	expect(errors).toEqual([])
+})
+
+test("clicking a net label selects its net; right-click lists the sheets it is on; picking one goes there", async ({ page }) => {
+	await openCubli(page)
+	const from = await openSheet(page, "Power.SchDoc")
+	const menu = page.getByRole("menu")
+	// A click selects the net and lists nothing (only ports and sheet entries list the sheets).
+	const first = await pointOn(page, 'g[data-k="25"]', 0)
+	await page.mouse.click(first.x, first.y)
+	await expect(page.getByRole("complementary", { name: "Net properties" })).toBeVisible()
+	await expect(menu).toHaveCount(0)
+	// A label of a net that leaves this sheet: GND-like power nets reach every sheet, labels pick one out.
+	const labels = page.locator('.sch-view[data-status="ready"] g[data-k="25"]')
+	const count = await labels.count()
+	let found = false
+	for (let k = 0; k < count && !found; k++) {
+		const p = await pointOn(page, 'g[data-k="25"]', k)
+		await page.mouse.click(p.x, p.y, { button: "right" })
+		await expect(menu).toBeVisible()
+		found = (await menu.locator(".port-menu-row:not(.current):not(.inert)").count()) > 0
+		if (!found) await page.keyboard.press("Escape")
+	}
+	expect(found).toBe(true)
+	await expect(menu.locator(".sch-popup-title")).not.toBeEmpty()
+	await expect(menu.locator(".port-menu-row.current")).toHaveCount(1)
+	await expect(page.getByRole("complementary", { name: "Net properties" })).toBeVisible()
+	await shot(page, "net-sheets-menu")
+	await menu.locator(".port-menu-row:not(.current):not(.inert)").first().click()
+	await expect(menu).toHaveCount(0)
+	await expect.poll(() => page.getByRole("button", { name: "Sheet", exact: true }).getAttribute("data-sheet")).not.toBe(from)
+	await expect.poll(() => page.locator(".sch-overlay .sel-net").count()).toBeGreaterThan(0)
+})
+
+test("right-clicking a part opens its card: designator, value, part number and parameters", async ({ page }) => {
+	await openCubli(page)
+	await openSheet(page, "Power.SchDoc")
+	const p = await pointOn(page, 'g[data-k="14"][data-o]')
+	await page.mouse.click(p.x, p.y, { button: "right" })
+	const card = page.getByRole("menu", { name: /^Part / })
+	await expect(card).toBeVisible()
+	const designator = (await card.locator(".part-card-designator").textContent())!
+	expect(designator).toMatch(/^[A-Z]+\d/)
+	await expect(card.getByText("Footprint", { exact: true })).toBeVisible()
+	// The part is selected too, and the card's buttons cross-probe.
+	await expect(page.getByRole("complementary", { name: "Component properties" }).locator(".inspector-head .title")).toHaveText(designator)
+	await expect(card.getByRole("menuitem", { name: "Show on PCB" })).toBeVisible()
+	await shot(page, "part-card")
+	await page.keyboard.press("Escape")
+	await expect(card).toHaveCount(0)
+	// No browser menu, and right-dragging still pans.
+	const before = await page.locator('.sch-view[data-status="ready"] svg').getAttribute("viewBox")
+	const box = (await page.locator(".sch-view").boundingBox())!
+	await page.mouse.move(box.x + 300, box.y + 300)
+	await page.mouse.down({ button: "right" })
+	await page.mouse.move(box.x + 400, box.y + 350, { steps: 5 })
+	await page.mouse.up({ button: "right" })
+	await expect(card).toHaveCount(0)
+	expect(await page.locator('.sch-view[data-status="ready"] svg').getAttribute("viewBox")).not.toBe(before)
 })
 
 test("clicking a component body shows its designator, comment, parameters and board location", async ({ page }) => {
@@ -143,8 +203,10 @@ test("the Nets tree selects a net; its connectivity rows jump between channel sh
 	await page.locator(".sidebar .tree-row", { hasText: /^3V3_MCU_ESC_1$/ }).click()
 	const panel = page.getByRole("complementary", { name: "Net properties" })
 	await expect(panel.locator(".inspector-head .title")).toHaveText("3V3_MCU_ESC_1")
-	await expect(panel.locator("dl")).toContainText("Physical Name3V3_MCU_ESC_1")
-	await expect(panel.locator("dl")).toContainText("Net Name3V3_MCU_ESC")
+	await expect(panel.locator("dl")).toContainText("Net Name3V3_MCU_ESC_1")
+	// Its other names, each with the sheets that use it.
+	const aliases = panel.locator(".inspector-section", { hasText: "Aliases" })
+	await expect(aliases.locator(".inspector-alias > .inspector-row:not(.sub)")).toContainText(["3V3_MCU_ESC"])
 	const rows = panel.locator(".inspector-section", { hasText: "Connectivity" }).locator(".inspector-row")
 	await expect(rows).toContainText(["ESC(U_ESC1)", "ESC_MCU(U_ESC_MCU1)"])
 	await expect(rows.filter({ hasText: "U_ESC2" })).toHaveCount(0) // only its own channel
@@ -164,4 +226,16 @@ test("a project net colour reaches the net under its other names on lower sheets
 	await openSheet(page, "Half_Bridges.SchDoc")
 	await expect.poll(() => page.locator('.sch-view [data-net-color][stroke="#fd8300"]').count()).toBeGreaterThan(0)
 	await shot(page, "net-colors-half-bridges")
+})
+
+test("net labels show the physical net name; the name written on the sheet shows on hover", async ({ page }) => {
+	await openCubli(page)
+	await openSheet(page, "ESC_MCU.SchDoc (U_ESC_M")
+	const label = page.locator('.sch-view[data-status="ready"] g[data-k="25"][data-i="33"]')
+	await expect(label).toHaveText("PWM_WH_1")
+	await expect(label).toHaveAttribute("data-name", "PWMH3")
+	const at = await pointOn(page, 'g[data-k="25"][data-i="33"]')
+	await page.mouse.move(at.x, at.y)
+	await expect(page.locator(".sch-tip")).toHaveText("On this sheet: PWM_H3, PWMH3") // its port and its label
+	await shot(page, "net-label-alias")
 })

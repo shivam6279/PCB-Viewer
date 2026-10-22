@@ -11,13 +11,20 @@ import { loadProjectData } from "./load-project-data"
 import { GitCommitSource } from "../github/commit-source"
 import { CommitSwitcher } from "./CommitSwitcher"
 import { navigate } from "./github-open"
-import { PaneContext } from "./pane"
+import { PaneContext, ViewLink } from "./pane"
 import { DiffArea } from "../shell/DiffArea"
+import { DeltaBar } from "../shell/DeltaBar"
+import { useDeltas } from "./use-deltas"
 import type { CompareMode, Selection } from "./store"
 import { SearchPalette } from "../shell/SearchPalette"
 import { buildSearchIndex, type SearchItem } from "../shell/search"
 import { useSidebarCollapsed } from "./sidebar-collapsed"
 import { PanelLeftOpen } from "lucide-react"
+import { queryLocalFonts } from "../sch/pdf/local-fonts"
+import { SchPdfDialog } from "../sch/pdf/SchPdfDialog"
+import type { SchPdfOptions } from "../sch/pdf/options"
+import { flattenHierarchy } from "../model/hierarchy"
+import { createPortal } from "react-dom"
 
 export function Viewer() {
 	// While parked behind the home screen the viewer keeps rendering its own (hidden) state.
@@ -27,6 +34,8 @@ export function Viewer() {
 	const variant = useAppStore(s => s.variant)
 	const { setScreen, setTab, selectSheet, selectPcb } = useAppStore.getState()
 	const parser = useMemo(() => workerParser(), [])
+	const [pdfBusy, setPdfBusy] = useState<string | null>(null)
+	const [pdfDialog, setPdfDialog] = useState(false)
 	const source = screen.kind === "viewer" ? screen.source : null
 	const project = screen.kind === "viewer" ? screen.project : null
 
@@ -61,8 +70,43 @@ export function Viewer() {
 	const compare = useAppStore(s => s.compare)
 	const secondary = compare?.source && compare.project ? { ...compare, source: compare.source, project: compare.project } : null
 	const mode: CompareMode = secondary ? compare!.mode : "primary"
+	const deltas = useAppStore(s => s.deltas)
 	const onSecondary = mode === "secondary" && secondary !== null
 	const data = onSecondary ? (secondary.data.status === "ready" ? secondary.data.data : null) : primaryData
+
+	// Comparing: the differences of the commit shown against the other one (side by side: the primary's).
+	const viewerScreen = screen.kind === "viewer" ? screen : null
+	const gitSource = viewerScreen?.source instanceof GitCommitSource ? viewerScreen.source : null
+	const sideA = useMemo(
+		() => (gitSource && viewerScreen && secondary ? { sha: gitSource.sha, source: gitSource, project: viewerScreen.project, parser, data: projectData } : null),
+		[gitSource, viewerScreen?.project, parser, projectData, secondary !== null],
+	)
+	const sideB = useMemo(
+		() => (secondary ? { sha: secondary.sha, source: secondary.source, project: secondary.project, parser: secondary.parser, data: secondary.data } : null),
+		[secondary?.sha, secondary?.source, secondary?.project, secondary?.parser, secondary?.data],
+	)
+	const flip = mode === "secondary"
+	const found = useDeltas(viewerScreen?.tab ?? "sch", viewerScreen?.activeSheetId ?? null, viewerScreen?.activePcbPath ?? null, flip ? sideB : sideA, flip ? sideA : sideB, compare?.files ?? null, flip)
+	// One viewport per document for the whole comparison, shared by Primary, Secondary and Both: switching
+	// modes (or coming back to a sheet) keeps the view where it was.
+	const session = compare ? `${gitSource?.sha ?? ""}:${compare.sha}` : null
+	const linkMap = useMemo(() => new Map<string, ViewLink<unknown>>(), [session])
+	const linkOf = (key: string) => {
+		let l = linkMap.get(key)
+		if (!l) linkMap.set(key, (l = new ViewLink<unknown>()))
+		return l
+	}
+	const pcbKey = viewerScreen?.activePcbPath ?? ""
+	const links = session ? { sch: linkOf(`sch:${viewerScreen?.activeSheetId ?? ""}`), pcb: linkOf(`pcb:${pcbKey}`), view3d: linkOf(`3d:${pcbKey}`), layers: linkOf(`layers:${pcbKey}`) } : null
+	// The change picked from the list: the boards go there.
+	const [focus, setFocus] = useState<{ area: number; seq: number } | null>(null)
+	useEffect(() => setFocus(null), [found])
+	// No deltas: nothing marked; deltas: marked over the view; deltas only: over it greyed.
+	const deltaMark = useMemo(() => {
+		const m = found?.mark
+		if (!m || deltas === "none") return null
+		return { ...m, dim: deltas === "only", artwork: m.artwork && { ...m.artwork, focus } }
+	}, [found, deltas, focus])
 
 	// The 3D view loads in the background, so opening the 3D tab is quick: what needs only the board
 	// file (its geometry, its part models) from the moment the project opens, alongside the schematic;
@@ -154,14 +198,43 @@ export function Viewer() {
 
 	// What the tree, the views and the inspector show: the primary, or (Secondary) the compared commit.
 	const shown = onSecondary ? { source: secondary.source, project: secondary.project, parser: secondary.parser } : { source: screen.source, project: screen.project, parser }
+	// Export PDF: its settings first, then every sheet of what is shown, downloaded as <project>[-<commit>].pdf.
+	const exportPdf =
+		data && mode !== "diff" && !pdfBusy
+			? async (options: SchPdfOptions) => {
+					const { source: src, project: prj, parser: p } = shown
+					setPdfDialog(false)
+					// Asked first, while the click still counts as the user's: the sheets' fonts to embed.
+					const fonts = queryLocalFonts()
+					setPdfBusy("Exporting…")
+					try {
+						const { exportSchematicPdf } = await import("../sch/pdf/export-pdf")
+						const blob = await exportSchematicPdf(src, prj, p, data, options, await fonts, (done, total) => setPdfBusy(`Exporting ${done}/${total}…`))
+						const sha = src instanceof GitCommitSource ? `-${src.sha.slice(0, 7)}` : ""
+						const a = document.createElement("a")
+						a.href = URL.createObjectURL(blob)
+						a.download = `${prj.name}${sha}.pdf`
+						a.click()
+						setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+						setPdfBusy(null)
+					} catch (e) {
+						console.error(e)
+						setPdfBusy("PDF export failed")
+						setTimeout(() => setPdfBusy(null), 4000)
+					}
+				}
+			: undefined
 	const modeBar = compare ? (
-		<div className="mode-bar" role="group" aria-label="Compare view">
-			{(["primary", "secondary", "diff"] as const).map(m => (
-				<button key={m} aria-pressed={mode === m} disabled={!secondary} onClick={() => useAppStore.getState().setCompareMode(m)}>
-					{m === "primary" ? "Primary" : m === "secondary" ? "Secondary" : "Diff"}
-				</button>
-			))}
-		</div>
+		<>
+			{secondary && <DeltaBar deltas={found} here={flip ? "B" : "A"} there={flip ? "A" : "B"} focus={focus?.area ?? null} onFocus={area => setFocus(f => ({ area, seq: (f?.seq ?? 0) + 1 }))} />}
+			<div className="mode-bar" role="group" aria-label="Compare view">
+				{(["primary", "secondary", "diff"] as const).map(m => (
+					<button key={m} aria-pressed={mode === m} disabled={!secondary} onClick={() => useAppStore.getState().setCompareMode(m)}>
+						{m === "primary" ? "Primary" : m === "secondary" ? "Secondary" : "Both"}
+					</button>
+				))}
+			</div>
+		</>
 	) : null
 
 	return (
@@ -203,27 +276,25 @@ export function Viewer() {
 				</div>
 			)}
 			<main className="main">
-				<DocBar project={shown.project} tab={tab} activeSheetId={activeSheetId} onTab={setTab} onSelectSheet={selectSheet} right={modeBar} />
+				<DocBar project={shown.project} tab={tab} activeSheetId={activeSheetId} onTab={setTab} onSelectSheet={selectSheet} right={modeBar} pdf={{ busy: pdfBusy, onExport: exportPdf && (() => setPdfDialog(true)) }} />
 				<div className="main-body">
-					{mode === "diff" && secondary && screen.source instanceof GitCommitSource ? (
-						<DiffArea
-							tab={tab}
-							activeSheetId={activeSheetId}
-							activePcbPath={activePcbPath}
-							a={{ sha: screen.source.sha, source: screen.source, project: screen.project, parser, data: projectData }}
-							b={{ sha: secondary.sha, source: secondary.source, project: secondary.project, parser: secondary.parser, data: secondary.data }}
-							files={compare?.files ?? null}
-						/>
+					{mode === "diff" && sideA && sideB ? (
+						<DiffArea tab={tab} activeSheetId={activeSheetId} activePcbPath={activePcbPath} a={sideA} b={sideB} mark={deltaMark} links={links!} />
 					) : onSecondary ? (
-						<PaneContext.Provider value={{ side: "secondary", data: secondary.data, diff: false, mark: null, links: null }}>
+						<PaneContext.Provider value={{ side: "secondary", data: secondary.data, diff: false, mark: deltaMark, links }}>
 							<ViewArea key="secondary" source={shown.source} parser={shown.parser} project={shown.project} tab={tab} activeSheetId={activeSheetId} activePcbPath={activePcbPath} />
 						</PaneContext.Provider>
 					) : (
-						<ViewArea key="primary" source={screen.source} parser={parser} project={screen.project} tab={tab} activeSheetId={activeSheetId} activePcbPath={activePcbPath} />
+						<PaneContext.Provider value={{ side: "primary", data: null, diff: false, mark: secondary ? deltaMark : null, links }}>
+							<ViewArea key="primary" source={screen.source} parser={parser} project={screen.project} tab={tab} activeSheetId={activeSheetId} activePcbPath={activePcbPath} />
+						</PaneContext.Provider>
 					)}
 					{data && selection && mode !== "diff" && <Inspector parser={shown.parser} tab={tab} project={shown.project} data={data} selection={selection} activeSheetId={activeSheetId} />}
 				</div>
 			</main>
+			{pdfDialog &&
+				exportPdf &&
+				createPortal(<SchPdfDialog hasChannels={new Set(flattenHierarchy(shown.project.hierarchy).map(n => n.docPath?.toLowerCase())).size < flattenHierarchy(shown.project.hierarchy).length} onExport={exportPdf} onClose={() => setPdfDialog(false)} />, document.body)}
 			{searching && searchIndex && <SearchPalette items={searchIndex} onPick={showHit} onClose={() => setSearching(false)} />}
 		</div>
 	)

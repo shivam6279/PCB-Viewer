@@ -1,4 +1,4 @@
-import { ArrowRight, ChevronDown, ChevronRight, FileArchive, FolderOpen, LogIn, LogOut, RefreshCw, Search, Upload, X } from "lucide-react"
+import { ArrowRight, ChevronDown, ChevronRight, ExternalLink, FileArchive, FolderOpen, LogIn, LogOut, RefreshCw, Search, Upload, X } from "lucide-react"
 import { GitCommitSource } from "../github/commit-source"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { ancestorsOf, buildProjectTree, filterTree, projectKey, type TreeNode } from "../github/project-tree"
@@ -10,7 +10,10 @@ import { zipSource } from "../source/zip-source"
 import { navigate, openLatest } from "./github-open"
 import { guarded, openRecent, openSource } from "./open"
 import { ProjectDetails } from "./ProjectDetails"
-import { isGitRecent, listRecents, recentKey, type Recent } from "./recents"
+import { isGitRecent, listRecents, recentKey, type GitRecent, type Recent } from "./recents"
+import type { CommitInfo, GitHub } from "../github/github"
+import { formatDate } from "./format-date"
+import { newerCommits } from "./newer-commits"
 import { Spinner } from "./Spinner"
 import { previewManifest } from "./stored-preview"
 import { FolderIcon, ProjectIcon } from "./tree-icons"
@@ -19,6 +22,8 @@ import { useGitHubProjects } from "./use-github-projects"
 
 export const TOKEN_URL = "https://github.com/settings/personal-access-tokens/new"
 const EXPANDED_KEY = "home-tree-open"
+// Where the site is deployed (linked from the dev server's top bar).
+const LIVE_URL = "https://shivam6279.github.io/PCB-Viewer/"
 
 // The start screen, laid out like the viewer: top bar, a project tree on the left (recent projects,
 // then the GitHub repos as their folders nest), and the selected project or a drop zone on the right.
@@ -102,6 +107,12 @@ export function Home() {
 					<span className="kbd">Ctrl+K</span>
 				</label>
 				<div className="home-actions">
+					{import.meta.env.DEV && (
+						// The deployed site, on the dev server only.
+						<a className="btn ghost" href={LIVE_URL} target="_blank" rel="noreferrer" aria-label="Live site" title={LIVE_URL}>
+							<ExternalLink size={15} /> <span className="btn-label">{LIVE_URL.replace(/^https:\/\/|\/$/g, "")}</span>
+						</a>
+					)}
 					{parked && (
 						<button className="btn primary" onClick={() => returnTo(parked)}>
 							Return to {parked.project.name} <ArrowRight size={15} />
@@ -128,7 +139,7 @@ export function Home() {
 
 			<nav className="sidebar home-sidebar" aria-label="Projects">
 				{parked && <OpenProject parked={parked} />}
-				{recents.length > 0 && !query && <RecentList recents={recents.slice(0, 5)} selectedKey={selected ? projectKey(selected) : null} />}
+				{recents.length > 0 && !query && <RecentList gh={session.gh} recents={recents.slice(0, 5)} selectedKey={selected ? projectKey(selected) : null} />}
 				<div className="section-heading with-action">
 					<span>GITHUB</span>
 					<RefreshButton loading={projects.loading} onClick={projects.refresh} />
@@ -236,7 +247,7 @@ function Account({ login }: { login: string }) {
 
 // As in the GitHub tree: a click shows a GitHub project's history, a double-click opens it (at the
 // commit it was last open at). A local folder has no history: a double-click opens it.
-function RecentList({ recents, selectedKey }: { recents: Recent[]; selectedKey: string | null }) {
+function RecentList({ gh, recents, selectedKey }: { gh: GitHub; recents: Recent[]; selectedKey: string | null }) {
 	return (
 		<>
 			<div className="section-heading">RECENT</div>
@@ -256,10 +267,37 @@ function RecentList({ recents, selectedKey }: { recents: Recent[]; selectedKey: 
 						<ProjectIcon />
 						<span className="tree-label">{r.name}</span>
 						<span className="tree-meta dim">{isGitRecent(r) ? `${r.github.repo} @ ${r.github.sha.slice(0, 7)}` : r.handle.name}</span>
+						{isGitRecent(r) && <NewerBadge gh={gh} recent={r} />}
 					</div>
 				)
 			})}
 		</>
+	)
+}
+
+// A GitHub recent opened at a commit that isn't the project's latest: how many newer ones changed it.
+function NewerBadge({ gh, recent }: { gh: GitHub; recent: GitRecent }) {
+	const { owner, repo, sha, prjPath } = recent.github
+	const [newer, setNewer] = useState<CommitInfo[]>([])
+	useEffect(() => {
+		let live = true
+		newerCommits(gh, { owner, repo }, sha, prjPath).then(
+			n => live && setNewer(n),
+			() => live && setNewer([]),
+		)
+		return () => {
+			live = false
+		}
+	}, [gh, owner, repo, sha, prjPath])
+	if (newer.length === 0) return null
+	const newest = newer[0]!
+	return (
+		<span
+			className="stale-badge"
+			title={`Last opened at ${sha.slice(0, 7)}; ${newer.length} newer commit${newer.length === 1 ? "" : "s"} changed this project (newest: ${newest.sha.slice(0, 7)} · ${formatDate(newest.date)})`}
+		>
+			{newer.length} newer
+		</span>
 	)
 }
 

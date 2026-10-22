@@ -13,10 +13,11 @@ export interface PickRow {
 // The right-click menu over the board: everything under the cursor (and the nets there), so what a part
 // covers can still be picked. On the page body (fixed): each view is its own compositor layer, which
 // would trap it underneath. x, y are client coordinates.
-export function PickMenu({ x, y, rows, onPick, onHover, onClose }: {
+export function PickMenu({ x, y, rows, label = "Objects here", onPick, onHover, onClose }: {
 	x: number
 	y: number
 	rows: PickRow[]
+	label?: string
 	onPick(key: string): void
 	onHover(key: string | null): void
 	onClose(): void
@@ -63,9 +64,9 @@ export function PickMenu({ x, y, rows, onPick, onHover, onClose }: {
 	return createPortal(
 		<div
 			ref={ref}
-			className="port-menu pick-menu"
+			className="sch-popup port-menu pick-menu"
 			role="menu"
-			aria-label="Objects here"
+			aria-label={label}
 			style={{ left: pos.x, top: pos.y }}
 			onPointerDown={e => e.stopPropagation()}
 			onPointerUp={e => e.stopPropagation()}

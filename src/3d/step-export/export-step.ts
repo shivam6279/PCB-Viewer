@@ -1,13 +1,14 @@
 // The board as a STEP assembly for mechanical CAD: the board itself as a solid with its holes drilled
-// (round ones as true cylinders), the outer copper, solder mask and silkscreen as sheets on its faces, and
+// (round ones as true cylinders), the outer copper, solder mask and silkscreen as thin solids on its faces, and
 // every part as its own embedded STEP model, copied in whole once per model and placed per part as an
 // assembly instance named by designator. Bodies without a model are their outline extruded.
 // Coordinates are mm from the board's origin, the board's bottom face at z = 0. Pure: no DOM.
 import type { ContourSeg, PcbScene } from "../../pcb/scene"
 import type { Board3d, Board3dBody, Board3dColors, Rgb } from "../board3d"
 import { outerLayers, primPaths, SCALE, type LayerRegion } from "../board-geometry"
-import { partColoursToBodies, renumber, stepEntities, stepRoots, withItem } from "./step-file"
-import { StepWriter, type PathSeg, type Region, type Ring, type Vec3 } from "./step-writer"
+import { partColoursToBodies, renumber, stepEntities, stepRoots, tagProducts, withItem } from "./step-file"
+import { modelPlacer, placementOf } from "./step-flatten"
+import { contentTag, num, StepWriter, type PathSeg, type Region, type Ring, type Vec3 } from "./step-writer"
 import { DEFAULT_STEP_OPTIONS, QUALITY_TOLERANCE, type StepEstimate, type StepExportOptions, type StepQuality } from "./options"
 
 export type { StepEstimate, StepExportOptions }
@@ -16,8 +17,10 @@ const MM = 0.0254
 const DEG = Math.PI / 180
 
 
-// The silkscreen's ink: how far it stands off the surface it is printed on (mm).
+// The silkscreen's ink: how far it stands off the surface it is printed on (mm). Copper without a mask
+// in the stackup: its usual thickness (mm).
 const SILK_LIFT = 0.012
+const COPPER = 0.035
 
 // The board's own parts in the assembly, by name, and the colour each is written in.
 export function layerColours(c: Board3dColors): Record<string, Rgb> {
@@ -55,21 +58,42 @@ export function exportStep(
 
 	// The assembly's own representation lists the placement of every instance, so it is written last;
 	// its product definition comes first so the instances can refer to it.
-	const placements: number[] = []
-	const assembly = { definition: 0, representation: 0 }
+	const placements: { origin: Vec3; z: Vec3; x: Vec3 }[] = [] // the models', written with the assembly
+	const assembly = { definition: 0, representation: 0, axis: 0 }
 	const instances: (() => void)[] = []
-	const colours: { item: number; rgb: Rgb }[] = []
 	const colourOf = layerColours(board.colors)
+	// One of the parts written here (the board, a layer, a part with no model): its records apart from
+	// every other part's (see beginPart), in its colour, placed as it is. Each is named with a tag of its
+	// geometry (the records written so far), so a part from another board, or from another export of
+	// this one, is never named the same (see tagProducts).
+	// As one part (options.onePart): every body an item of the one part, the models' copied in place.
+	const onePart = options.onePart
+	const partItems: number[] = []
+	const partColours: { item: number; rgb: Rgb }[] = []
+	const partStyled: number[] = [] // the models' own colours, copied with their bodies
+	const ownPart = (name: string, label: string, repType: string, build: () => number[], rgb: Rgb) => {
+		if (onePart) {
+			const items = build()
+			partItems.push(...items)
+			for (const item of items) partColours.push({ item, rgb })
+			return
+		}
+		w.beginPart()
+		const items = build()
+		if (!items.length) return
+		const axis = w.originAxis()
+		const p = w.product(`${name} ${w.tag()}`, repType, [axis, ...items])
+		w.colour(items.map(item => ({ item, rgb })))
+		const n = instances.length + 1
+		instances.push(() => w.instance(label, assembly, p, axis, assembly.axis, n))
+	}
 
-	// The board's layers at their heights in the stackup. With the solder mask: the board solid is the
-	// dielectric; the outer copper a sheet at its top face, 35 µm above the dielectric; the mask a solid
-	// from the dielectric up to the board's full thickness, open over the pads (so the copper shows
-	// only there, and the board's edge is whole); the silkscreen a sheet printed on the mask. Parts sit
-	// on the mask, at the full thickness, as placed. Without it, the board is the whole thickness and
-	// the copper and silkscreen sheets lie on it.
-	// (Faces only a few µm apart drew in CAD by whichever came first: pads showed as bare board, a
-	// whole patch of mask went missing. And as solids, the copper and silkscreen's 35 µm walls made
-	// Cubli's 82 MB: sheets look the same.)
+	// The board's layers at their heights in the stackup, every one a solid (CAD drew the open edges of
+	// sheets as lines all over the board). With the solder mask: the board solid is the dielectric; the
+	// outer copper its own thickness on it; the mask a solid from the dielectric up to the board's full
+	// thickness, open over the pads (so the copper shows only there, and the board's edge is whole); the
+	// silkscreen printed on the mask. Parts sit on the mask, at the full thickness, as placed. Without
+	// it, the board is the whole thickness and the copper and silkscreen lie on it.
 	const z = (depth: number) => thickness - depth * MM
 	const copperLayers = board.stack.filter(l => l.kind === "copper")
 	const topCu = copperLayers[0], bottomCu = copperLayers[copperLayers.length - 1]
@@ -79,75 +103,93 @@ export function exportStep(
 	const heights = masked
 		? {
 				board: [z(bottomCu.top), z(topCu.bottom)],
-				copper: [z(topCu.top), z(bottomCu.bottom)],
+				topCopper: [z(topCu.bottom), z(topCu.top)],
+				bottomCopper: [z(bottomCu.bottom), z(bottomCu.top)],
 				topMask: [z(topCu.bottom), z(topMask.top)],
 				bottomMask: [z(bottomMask.bottom), z(bottomCu.top)],
-				silk: [z(topMask.top) + SILK_LIFT, z(bottomMask.bottom) - SILK_LIFT],
+				topSilk: [z(topMask.top), z(topMask.top) + SILK_LIFT],
+				bottomSilk: [z(bottomMask.bottom) - SILK_LIFT, z(bottomMask.bottom)],
 			}
-		: { board: [0, thickness], copper: [thickness + SILK_LIFT, -SILK_LIFT], topMask: [0, 0], bottomMask: [0, 0], silk: [thickness + 2 * SILK_LIFT, -2 * SILK_LIFT] }
+		: { board: [0, thickness], topCopper: [thickness, thickness + COPPER], bottomCopper: [-COPPER, 0], topMask: [0, 0], bottomMask: [0, 0], topSilk: [thickness, thickness + SILK_LIFT], bottomSilk: [-SILK_LIFT, 0] }
 
-	// The board: its outline with every hole drilled through (vias only when asked).
-	const boardSolid = w.prism(boardRegion(scene, mm, options.viaHoles, options.platedHoles), heights.board[0]!, heights.board[1]!)
-	const boardPart = w.product("Board", "ADVANCED_BREP_SHAPE_REPRESENTATION", [w.originAxis(), boardSolid])
-	// Bare FR4, under a mask or not.
-	colours.push({ item: boardSolid, rgb: colourOf.Board! })
-	instances.push(() => w.instance("Board", assembly, boardPart, w.originAxis(), w.originAxis(), 1))
+	// The board: its outline with every hole drilled through (vias only when asked). Bare FR4, under a
+	// mask or not.
+	ownPart("Board", "Board", "ADVANCED_BREP_SHAPE_REPRESENTATION", () => [w.prism(boardRegion(scene, mm, options.viaHoles, options.platedHoles), heights.board[0]!, heights.board[1]!)], colourOf.Board!)
 
 	if (options.copper || options.platedHoles || masked || options.silkscreen) {
 		// Under a mask only the copper in its openings shows: by default that is all that is drawn
 		// (Cubli's pours and tracks under the mask were half the file).
-		const layers = layersOf(scene, board, { viaHoles: options.viaHoles, exposedOnly: !!masked && !options.copperUnderMask, copper: options.copper, tolerance: QUALITY_TOLERANCE[options.quality] ?? QUALITY_TOLERANCE.standard })
+		const layers = layersOf(scene, board, { viaHoles: options.viaHoles, exposedOnly: !!masked && !options.copperUnderMask, copper: options.copper, tolerance: QUALITY_TOLERANCE[options.quality] ?? QUALITY_TOLERANCE.standard, wholeMask: options.maskOneFace })
 		const ring = (pts: number[]) => pts.flatMap((v, i) => (i % 2 ? [] : mm(v, pts[i + 1]!)))
 		const region = (r: LayerRegion) => ({ outer: ring(r.outer), holes: r.holes.map(h => ({ t: "poly" as const, pts: ring(h) })) })
-		const part = (label: string, repType: string, items: number[], rgb: Rgb) => {
-			const p = w.product(label, repType, [w.originAxis(), ...items])
-			for (const item of items) colours.push({ item, rgb })
-			const n = instances.length + 1
-			instances.push(() => w.instance(label, assembly, p, w.originAxis(), w.originAxis(), n))
-		}
-		const sheet = (label: string, regions: LayerRegion[], at: number, up: boolean, rgb: Rgb) => {
-			if (regions.length) part(label, "MANIFOLD_SURFACE_SHAPE_REPRESENTATION", [w.surfaceModel(regions.map(r => w.face(region(r), at, up)))], rgb)
+		const layer = (label: string, regions: LayerRegion[], [z0, z1]: number[], rgb: Rgb) => {
+			if (regions.length) ownPart(label, label, "ADVANCED_BREP_SHAPE_REPRESENTATION", () => regions.map(r => w.prism(region(r), z0!, z1!)), rgb)
 		}
 		if (options.copper) {
-			sheet("Top Copper", layers.copper.top, heights.copper[0]!, true, colourOf["Top Copper"]!)
-			sheet("Bottom Copper", layers.copper.bottom, heights.copper[1]!, false, colourOf["Bottom Copper"]!)
+			layer("Top Copper", layers.copper.top, heights.topCopper, colourOf["Top Copper"]!)
+			layer("Bottom Copper", layers.copper.bottom, heights.bottomCopper, colourOf["Bottom Copper"]!)
 		}
 		if (options.platedHoles) {
-			// The plating of every drilled plated hole, through the board: the finished hole (the board's
-			// own hole is drilled wider by the plating; see boardRegion).
-			const tubes = layers.barrels.flatMap(b => {
-				const [x, y] = mm(b.x, b.y)
-				return w.tube(x, y, b.r * MM, 0, thickness)
-			})
-			if (tubes.length) part("Plated Holes", "MANIFOLD_SURFACE_SHAPE_REPRESENTATION", [w.surfaceModel(tubes)], colourOf["Plated Holes"]!)
+			// The plating of every drilled plated hole, through the board: a tube from the finished hole out
+			// to the board's own hole (drilled wider by the plating; see boardRegion).
+			ownPart("Plated Holes", "Plated Holes", "ADVANCED_BREP_SHAPE_REPRESENTATION", () =>
+				layers.barrels.map(b => {
+					const [x, y] = mm(b.x, b.y)
+					return w.prism({ outer: [], outerRing: { t: "circle", x, y, r: b.r * MM + PLATING }, holes: [{ t: "circle", x, y, r: b.r * MM }] }, 0, thickness)
+				}),
+			colourOf["Plated Holes"]!)
 		}
 		if (masked) {
 			const solids = (regions: LayerRegion[], [z0, z1]: number[]) => regions.map(r => w.prism(region(r), z0!, z1!))
-			if (layers.mask.top.length) part("Top Solder Mask", "ADVANCED_BREP_SHAPE_REPRESENTATION", solids(layers.mask.top, heights.topMask), colourOf["Top Solder Mask"]!)
-			if (layers.mask.bottom.length) part("Bottom Solder Mask", "ADVANCED_BREP_SHAPE_REPRESENTATION", solids(layers.mask.bottom, heights.bottomMask), colourOf["Bottom Solder Mask"]!)
+			ownPart("Top Solder Mask", "Top Solder Mask", "ADVANCED_BREP_SHAPE_REPRESENTATION", () => solids(layers.mask.top, heights.topMask), colourOf["Top Solder Mask"]!)
+			ownPart("Bottom Solder Mask", "Bottom Solder Mask", "ADVANCED_BREP_SHAPE_REPRESENTATION", () => solids(layers.mask.bottom, heights.bottomMask), colourOf["Bottom Solder Mask"]!)
 		}
 		if (options.silkscreen) {
-			sheet("Top Silkscreen", layers.silk.top, heights.silk[0]!, true, colourOf["Top Silkscreen"]!)
-			sheet("Bottom Silkscreen", layers.silk.bottom, heights.silk[1]!, false, colourOf["Bottom Silkscreen"]!)
+			layer("Top Silkscreen", layers.silk.top, heights.topSilk, colourOf["Top Silkscreen"]!)
+			layer("Bottom Silkscreen", layers.silk.bottom, heights.bottomSilk, colourOf["Bottom Silkscreen"]!)
 		}
 	}
 
-	// Each model's records, copied once; their root products, placed per body.
+	// Each model's records, copied once; their root products, placed per body. A board can embed one file
+	// under several models (Camera: 28 models, 16 files): copied once, by its contents' tag.
 	const copied = new Map<string, { definition: number; representation: number; axis: number }[] | null>()
+	const tags = new Map<string, string>()
+	const fileOf = (model: string) => {
+		const bytes = models.get(model)
+		if (bytes && !tags.has(model)) tags.set(model, contentTag(bytes))
+		return tags.get(model) ?? `model ${model}`
+	}
+	const placers = new Map<string, ReturnType<typeof modelPlacer>>()
 	const missing: string[] = []
 	let parts = 0
 	for (const b of options.parts ? board.bodies : []) {
 		const designator = b.component !== null ? scene.components[b.component]?.designator ?? "" : ""
 		const at = placement(b, mm, thickness)
-		if (b.model) {
-			if (!copied.has(b.model)) copied.set(b.model, copyModel(w, models.get(b.model) ?? null))
-			const roots = copied.get(b.model)
+		if (b.model && onePart) {
+			const file = fileOf(b.model)
+			if (!placers.has(file)) {
+				const bytes = models.get(b.model)
+				placers.set(file, bytes ? modelPlacer(partColoursToBodies(stepEntities(fromLatin1(bytes))), num) : null)
+			}
+			const place = placers.get(file)
+			if (place) {
+				const copy = place(w, placementOf(at.origin, at.z, at.x), designator || "Body")
+				partItems.push(...copy.bodies)
+				partStyled.push(...copy.styled)
+				parts++
+				continue
+			}
+			const modelName = board.models.find(m => m.key === b.model)?.name ?? b.model
+			if (!missing.includes(modelName)) missing.push(modelName)
+		} else if (b.model) {
+			const file = fileOf(b.model)
+			if (!copied.has(file)) copied.set(file, copyModel(w, models.get(b.model) ?? null, file))
+			const roots = copied.get(file)
 			if (roots) {
 				for (const root of roots) {
-					const axis = w.axis(at.origin, at.z, at.x)
-					placements.push(axis)
+					const k = placements.push(at) - 1
 					const n = instances.length + 1
-					instances.push(() => w.instance(designator, assembly, root, root.axis, axis, n))
+					instances.push(() => w.instance(designator, assembly, root, root.axis, placementAxes[k]!, n))
 				}
 				parts++
 				continue
@@ -162,17 +204,22 @@ export function exportStep(
 		const pts = ccw(ring.flatMap((v, i) => (i % 2 ? [] : mm(v, ring[i + 1]!))))
 		const [z0, z1] = b.side === "top" ? [thickness + b.standoff * MM, thickness + b.height * MM] : [-b.height * MM, -b.standoff * MM]
 		if (z1 - z0 <= 0) continue
-		const solid = w.prism({ outer: pts, holes: [] }, z0, z1)
-		const part = { ...w.product(designator || "Body", "ADVANCED_BREP_SHAPE_REPRESENTATION", [w.originAxis(), solid]), axis: w.originAxis() }
-		colours.push({ item: solid, rgb: b.model ? [0.5, 0.5, 0.5] : b.color })
-		const n = instances.length + 1
-		instances.push(() => w.instance(designator, assembly, part, w.originAxis(), w.originAxis(), n))
+		ownPart(designator || "Body", designator, "ADVANCED_BREP_SHAPE_REPRESENTATION", () => [w.prism({ outer: pts, holes: [] }, z0, z1)], b.model ? [0.5, 0.5, 0.5] : b.color)
 		parts++
 	}
 
-	Object.assign(assembly, w.product(name, "SHAPE_REPRESENTATION", [w.originAxis(), ...placements]))
+	if (onePart) {
+		w.product(name, "SHAPE_REPRESENTATION", [w.originAxis(), ...partItems])
+		w.colour(partColours)
+		if (partStyled.length) w.add(`MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',(${partStyled.map(s => "#" + s).join(",")}),#${w.mmContext()})`)
+		return { bytes: w.bytes(`${name}.step`), parts, models: [...placers.values()].filter(Boolean).length, missing }
+	}
+	// The assembly, its records apart from every part's too: its origin and each model's placement.
+	w.beginPart()
+	assembly.axis = w.originAxis()
+	const placementAxes = placements.map(p => w.axis(p.origin, p.z, p.x))
+	Object.assign(assembly, w.product(name, "SHAPE_REPRESENTATION", [assembly.axis, ...placementAxes]))
 	for (const add of instances) add()
-	w.colour(colours)
 	return { bytes: w.bytes(`${name}.step`), parts, models: [...copied.values()].filter(Boolean).length, missing }
 }
 
@@ -182,11 +229,12 @@ export function exportStep(
 export function estimateStep(scene: PcbScene, board: Board3d, models: Map<string, Uint8Array | null>, quality: StepQuality, parts?: number): StepEstimate {
 	const built = new Map<string, ReturnType<typeof outerLayers>>()
 	const layersOf: typeof outerLayers = (s, b, o) => {
-		const key = `${o.viaHoles}/${o.exposedOnly}/${o.copper}`
+		const key = `${o.viaHoles}/${o.exposedOnly}/${o.copper}/${o.wholeMask}`
 		if (!built.has(key)) built.set(key, outerLayers(s, b, o))
 		return built.get(key)!
 	}
-	const none: StepExportOptions = { parts: false, copper: false, copperUnderMask: false, platedHoles: false, mask: false, silkscreen: false, viaHoles: false, quality }
+	// (The mask as one face or tiles: the same size within a percent or two.)
+	const none: StepExportOptions = { onePart: true, parts: false, copper: false, copperUnderMask: false, platedHoles: false, mask: false, maskOneFace: true, silkscreen: false, viaHoles: false, quality }
 	const size = (o: Partial<StepExportOptions>) => exportStep(scene, board, models, "board", { ...none, ...o }, layersOf).bytes.length
 	const base = size({})
 	const platedHoles = size({ platedHoles: true }) - base
@@ -373,10 +421,11 @@ function ringContainsCircle(ring: number[], x: number, y: number, r: number): bo
 
 // A model's records, renumbered into the writer; its root products (each with an axis to place it by,
 // added to its representation when it has none). Null when the file is unreadable or has no product.
-// A colour on a whole part goes onto its bodies (see partColoursToBodies).
-function copyModel(w: StepWriter, bytes: Uint8Array | null): { definition: number; representation: number; axis: number }[] | null {
+// A colour on a whole part goes onto its bodies (see partColoursToBodies). Its products are named with a
+// tag of the file (`tag`, see tagProducts): the same model on two boards stays one part.
+function copyModel(w: StepWriter, bytes: Uint8Array | null, tag: string): { definition: number; representation: number; axis: number }[] | null {
 	if (!bytes) return null
-	const entities = partColoursToBodies(stepEntities(fromLatin1(bytes)))
+	const entities = tagProducts(partColoursToBodies(stepEntities(fromLatin1(bytes))), tag)
 	const roots = stepRoots(entities)
 	if (!roots.length) return null
 	const first = w.reserve(entities.length + roots.length * 4)

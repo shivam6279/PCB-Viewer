@@ -115,10 +115,15 @@ test("home keeps the open viewer to return to; double-click opens a project's la
 	await expect(page.getByRole("navigation", { name: "Project" }).getByText("Top.SchDoc (Top)", { exact: true })).toBeVisible({ timeout: 60_000 })
 	await page.getByRole("tab", { name: "PCB" }).click()
 	await expect(page.getByRole("tab", { name: "PCB" })).toHaveAttribute("aria-selected", "true")
+	// An older commit says so: one newer commit changed the project since.
+	await expect(page.getByRole("button", { name: /^Not the latest · 1 newer$/ })).toBeVisible({ timeout: 30_000 })
+	await shot(page, "viewer-not-latest")
 
 	// Back to home: the viewer is offered back, and comes back as it was, without reloading anything.
 	await page.getByLabel("Back to start").click()
 	await expect(page.locator(".home-topbar").getByRole("button", { name: "Return to Cubli" })).toBeVisible()
+	// The recent project, last opened at that older commit, says so too.
+	await expect(page.locator(".home-sidebar .tree-row", { hasText: "Cubli" }).locator(".stale-badge")).toHaveText("1 newer", { timeout: 30_000 })
 	await shot(page, "home-parked")
 	await page.locator(".home-topbar").getByRole("button", { name: "Return to Cubli" }).click()
 	await expect(page.getByRole("tab", { name: "PCB" })).toHaveAttribute("aria-selected", "true")
@@ -131,7 +136,10 @@ test("home keeps the open viewer to return to; double-click opens a project's la
 	await page.getByRole("tree", { name: "GitHub projects" }).getByRole("treeitem", { name: /^STM32/ }).dblclick()
 	await expect(page).toHaveURL(new RegExp(`#/gh/${OWNER}/${REPO}/${head}/`))
 	await expect(page.getByLabel("Commit", { exact: true })).toHaveValue(head, { timeout: 60_000 })
-	await expect(page.getByRole("tab", { name: "SCH" })).toHaveAttribute("aria-selected", "true")
+	// The tabs come with the project, after the commit picker shows the commit: as long a wait.
+	await expect(page.getByRole("tab", { name: "SCH" })).toHaveAttribute("aria-selected", "true", { timeout: 60_000 })
+	// The latest: no indicator.
+	await expect(page.getByRole("button", { name: /^Not the latest/ })).toHaveCount(0)
 	await page.getByLabel("Back to start").click()
 	await expect(page.locator(".home-sidebar .tree-row.active", { hasText: "Cubli" }).first()).toBeVisible()
 	await expect(page.locator(".home-topbar").getByRole("button", { name: "Return to Cubli" })).toBeVisible()
@@ -158,7 +166,7 @@ test("a first anonymous visit stays well inside GitHub's 60 requests an hour", a
 	expect(api.length).toBeLessThanOrEqual(12)
 })
 
-test("with the site's index, browsing makes no GitHub API requests at all", async ({ page }) => {
+test("with the site's index, browsing makes no GitHub API requests but the index's one check against GitHub", async ({ page }) => {
 	const gh = await fakeGitHub(page)
 	const served = await serveIndex(page)
 	await page.goto("/")
@@ -175,10 +183,11 @@ test("with the site's index, browsing makes no GitHub API requests at all", asyn
 	await expect(page.locator('.sch-view[data-status="ready"]')).toBeVisible({ timeout: 60_000 })
 	// Compare with the commit before: still nothing from the API.
 	await page.getByRole("button", { name: "Compare" }).click()
-	await expect(page.getByRole("group", { name: "Compare view" }).getByRole("button", { name: "Diff" })).toBeEnabled({ timeout: 60_000 })
+	await expect(page.getByRole("group", { name: "Compare view" }).getByRole("button", { name: "Both" })).toBeEnabled({ timeout: 60_000 })
 	await page.waitForTimeout(1000)
 	const api = gh.requests.filter(r => !r.startsWith("raw:"))
 	expect(served).toContain("shivam6279/PCB/commits.json")
-	expect(api).toEqual([])
+	// Only the check that the index is not behind GitHub (the branch heads, once).
+	expect(api).toEqual(["/repos/shivam6279/PCB/branches?per_page=100"])
 	expect(gh.requests.filter(r => r.startsWith("raw:")).length).toBeGreaterThan(0) // files from the CDN
 })

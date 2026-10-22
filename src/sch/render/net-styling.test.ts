@@ -55,6 +55,6 @@ test("designators on a channel sheet are renamed with the project's channel desi
 		].join("\r\n"),
 	)
 	const svg = serializeAltiumSheetToSvg(doc, { margin: 0, channel: { index: 1, name: "U_ESC1", designatorFormat: "$Component_$ChannelIndex" } })
-	expect(svg).toContain(">D5_ESC_1<tspan fill=\"#8c8c8c\" font-size=\"0.8em\"> (D5_ESC)</tspan></text>")
+	expect(svg).toContain(">D5_ESC_1</text>")
 	expect(serializeAltiumSheetToSvg(doc, { margin: 0 })).toContain(">D5_ESC</text>")
 })

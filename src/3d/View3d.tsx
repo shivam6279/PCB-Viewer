@@ -177,9 +177,10 @@ export function View3d({
 		const saved = savedViews.get(scene)
 		const me = {}
 		const shared = link.current
+		const sideBySide = pane.diff
 		const e = new BoardEngine(el, scene, board, geometry, {
 			pick: (hit, clientX, clientY) => {
-				if (shared) return // side by side: no selection (ids differ between the commits)
+				if (sideBySide) return // side by side: no selection (ids differ between the commits)
 				if (measuringRef.current) return tool.click(clientX, clientY, ctrlHeld.current)
 				if (shiftClick) return // Shift+click leaves the selection be (Shift+double-click adds a net)
 				const state = useAppStore.getState()
@@ -226,7 +227,7 @@ export function View3d({
 		// With Shift it adds the net to those highlighted (or takes an added one away again); the oldest
 		// added goes when MAX_NETS are lit.
 		const onDouble = (ev: MouseEvent) => {
-			if (shared || measuringRef.current) return
+			if (sideBySide || measuringRef.current) return
 			const net = e.netAt(ev.clientX, ev.clientY)
 			if (!net) return
 			const state = useAppStore.getState()
@@ -670,7 +671,7 @@ export function View3d({
 					partLabel={key => (scene ? partLabel(scene, partIndex(scene, key), data?.compiled ?? null) : key)}
 					onHiddenParts={hidden => useAppStore.getState().setView3dHidden(hidden)}
 					onSelectPart={key => {
-						if (!scene || link.current) return
+						if (!scene || pane.diff) return
 						const i = partIndex(scene, key)
 						if (i >= 0) useAppStore.getState().select(componentSelection(scene, i, data?.compiled ?? null))
 					}}

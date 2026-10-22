@@ -33,6 +33,7 @@ const net = (instances: string[]): CompiledNet => ({
 	netName: "N",
 	physicalName: "N",
 	names: [],
+	aliases: [],
 	pins: [],
 	occurrences: instances.map(instanceId => ({ instanceId, objects: [1, 7] })),
 })

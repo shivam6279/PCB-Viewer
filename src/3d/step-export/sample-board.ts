@@ -109,6 +109,7 @@ export function sampleBoard(): { scene: PcbScene; board: Board3d } {
 
 	const component = (designator: string, x: number, y: number, owned: number[]) => ({
 		designator,
+		logicalDesignator: designator,
 		sourceUniqueId: designator,
 		footprint: "",
 		footprintDescription: "",

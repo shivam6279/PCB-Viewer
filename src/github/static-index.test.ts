@@ -1,5 +1,5 @@
-import { expect, test } from "vitest"
-import type { GitHubClient } from "./client"
+import { describe, expect, test } from "vitest"
+import { GitHubError, type GitHubClient } from "./client"
 import { GitHub } from "./github"
 import { memoryObjectCache } from "./object-cache"
 import { historyOf, StaticIndex, type IndexCommit } from "./static-index"
@@ -53,4 +53,43 @@ test("GitHub answers from the index without touching the API", async () => {
 	expect([...(await gh.tree(ref, "a4")).files.keys()]).toEqual(["Cubli/Cubli.PrjPcb", "Cubli/x.SchDoc"])
 	expect(await gh.treeAtBranch(ref, "main")).toEqual(["Cubli/Cubli.PrjPcb", "Cubli/x.SchDoc"])
 	expect(calls).toEqual([])
+})
+
+describe("the index against GitHub", () => {
+	const ref = { owner: "o", repo: "r" }
+	const ghWith = (json: (path: string) => Promise<unknown>) => {
+		const client = { json, page: json, pages: json, raw: json } as unknown as GitHubClient
+		return new GitHub(client, memoryObjectCache(), true, fakeFetch, new StaticIndex("idx/", fakeFetch))
+	}
+
+	test("every branch where GitHub has it: current", async () => {
+		const gh = ghWith(async () => [{ name: "main", commit: { sha: "a4" } }, { name: "feature", commit: { sha: "b3" } }])
+		expect(await gh.indexFreshness(ref)).toMatchObject({ status: "current", repo: "o/r", indexedDate: "2026-01-04T00:00:00Z" })
+	})
+
+	test("GitHub moved a branch or has a new one: behind, the default branch first, with GitHub's date", async () => {
+		const gh = ghWith(async path =>
+			path.includes("/branches")
+				? [{ name: "feature", commit: { sha: "b9" } }, { name: "main", commit: { sha: "a9" } }, { name: "new", commit: { sha: "n1" } }]
+				: { sha: "a9", commit: { message: "x", author: { date: "2026-02-01T00:00:00Z" } } },
+		)
+		const f = await gh.indexFreshness(ref)
+		expect(f).toMatchObject({ status: "behind", liveDate: "2026-02-01T00:00:00Z" })
+		expect(f?.status === "behind" && f.branches).toEqual([
+			{ name: "main", indexed: "a4", live: "a9" },
+			{ name: "feature", indexed: "b3", live: "b9" },
+			{ name: "new", indexed: null, live: "n1" },
+		])
+	})
+
+	test("GitHub can't be asked (a private repo without a token): unchecked, saying why", async () => {
+		const gh = ghWith(async () => Promise.reject(new GitHubError("notFound", "Not Found", 404)))
+		const f = await gh.indexFreshness(ref)
+		expect(f).toMatchObject({ status: "unchecked" })
+		expect(f?.status === "unchecked" && f.reason).toMatch(/private/)
+	})
+
+	test("no index for the repo: nothing to check", async () => {
+		expect(await ghWith(async () => []).indexFreshness({ owner: "o", repo: "nope" })).toBeNull()
+	})
 })

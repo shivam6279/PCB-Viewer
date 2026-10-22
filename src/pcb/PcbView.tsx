@@ -9,7 +9,8 @@ import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pa
 import { whenIdle } from "../app/idle"
 import type { Parser } from "../parse/parser"
 import { QuarterTurns } from "../app/step-queue"
-import { buildRenderCache, CANVAS_BG, cameraMatrix, toBoardPoint, toCanvasPoint, viewExtent, drawComponentBox, drawNetGlow, drawObjectOutline, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
+import { buildRenderCache, CANVAS_BG, cameraMatrix, toBoardPoint, toCanvasPoint, viewExtent, drawArtworkMark, drawComponentBox, drawNetGlow, drawObjectOutline, drawPcb, type PcbCamera, type PcbRenderCache } from "./draw"
+import { ARTWORK_DRILLS, ARTWORK_OUTLINE } from "../diff/artwork-keys"
 import { drawLabels } from "./labels"
 import { buildIndex, componentAt, hitsAt, hitTest, netAt, objectsIn, type HitOptions, type PcbHit, type PcbIndex } from "./hit"
 import { LayersPanel } from "./LayersPanel"
@@ -147,12 +148,47 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		setPrepared(scene)
 		setLayers((followsLayers ? layerLink?.last?.value : null) ?? savedViews.get(scene)?.layers ?? defaultLayerState(scene))
 	}
-	// Comparing: what only this commit has, in red (removed) or green (added), over a greyed board.
+	// Comparing (deltas only): the board greyed under the differences; else drawn as it is, with the
+	// selection (one commit on its own can be selected in).
 	const highlight = useMemo(
-		() => (mark ? { objects: mark.ids, outline: null, componentBox: null, frame: null } : scene ? pcbHighlight(scene, selection, data?.compiled ?? null) : null),
+		() => (mark?.dim ? { objects: new Set<number>(), outline: null, componentBox: null, frame: null } : scene ? pcbHighlight(scene, selection, data?.compiled ?? null) : null),
 		[scene, selection, data, mark],
 	)
-	const tone = mark ? (mark.tone === "removed" ? DIFF_REMOVED : DIFF_ADDED) : null
+	// Comparing boards: the artwork that differs and the parts moved, added or removed, drawn on the
+	// live view: green what this board has and the other not, red what the other has and this not.
+	const artwork = mark?.artwork ?? null
+	const ringsPath = (rings: number[][]) => {
+		const path = new Path2D()
+		for (const ring of rings) {
+			for (let i = 0; i + 1 < ring.length; i += 2) (i ? path.lineTo : path.moveTo).call(path, ring[i]!, ring[i + 1]!)
+			path.closePath()
+		}
+		return path
+	}
+	const artPaths = useMemo(() => artwork?.pieces.map(p => ({ layer: p.layer, color: p.tone === "added" ? DIFF_ADDED : DIFF_REMOVED, big: p.big, path: ringsPath(p.rings) })) ?? null, [artwork?.pieces])
+	const partPaths = useMemo(() => artwork?.parts.map(p => ({ side: p.side, color: p.tone === "added" ? DIFF_ADDED : DIFF_REMOVED, path: ringsPath([p.box]) })) ?? null, [artwork?.parts])
+	const artRef = useRef<Parameters<typeof drawArtworkMark>[2] | null>(null)
+	artRef.current = null
+	if (artwork && artPaths && partPaths && layers) {
+		// A piece shows while its layer does; drill holes with any copper, the board's shape always.
+		const only = onlyLayer(layers)
+		const isCopper = (key: string) => scene?.layers.find(l => l.key === key)?.group === "copper"
+		const shown = (layer: string) =>
+			layer === ARTWORK_OUTLINE || (layer === ARTWORK_DRILLS ? (only ? isCopper(only) : true) : only ? layer === only : layers.visible.has(layer))
+		// The current layer's differences filled, the other layers' outlined, so they don't bury it.
+		const strong = (layer: string) => only !== null || layer === layers.current || layer === ARTWORK_DRILLS || layer === ARTWORK_OUTLINE
+		artRef.current = {
+			pieces: artPaths.filter(p => shown(p.layer)).map(p => ({ ...p, strong: strong(p.layer) })).sort((x, y) => Number(x.strong) - Number(y.strong)),
+			// A part on a side shows while a layer of that side does (in one-layer view: that layer's side).
+			moves: artwork.moves.filter(m => m.layers.some(l => (only ? l === only : layers.visible.has(l)))),
+			parts: partPaths.filter(p => {
+				const sideOf = (key: string) => scene?.layers.find(l => l.key === key)?.side
+				return only ? sideOf(only) === p.side : [...layers.visible].some(k => sideOf(k) === p.side)
+			}),
+			areas: artwork.areas.map(a => a.box),
+			focus: artwork.focus?.area ?? null,
+		}
+	}
 
 	// What the current layer view shows: an object on a visible layer, or (single-layer mode) on that
 	// layer or a via/through-hole pad passing through it. Only these are labelled, hovered or picked.
@@ -239,7 +275,6 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			highlight: highlight?.objects ?? null,
 			selectedOutline: highlight?.outline ?? null,
 			componentBox: null, // drawn on the live view (blit) so it stays crisp
-			tone,
 			netColors: netColorsOn,
 		})
 		timing.current.board = performance.now() - t0
@@ -283,6 +318,8 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 			const [x0, y0, x1, y1] = viewExtent(cam, el.width, el.height)
 			drawLabels(ctx, objectsIn(idx, x0, y0, x1, y1), cam, rules.isActive, rules.isCurrent)
 		}
+		const art = artRef.current
+		if (art) drawArtworkMark(ctx, cam, art)
 		// The selected part's box (green, hatched) and the hovered part's box (outline only).
 		const hovered = hoverComponent.current !== null ? scene?.components[hoverComponent.current]?.box : undefined
 		if (hovered && hovered !== selectedBox.current) drawComponentBox(ctx, cam, hovered, false)
@@ -367,6 +404,9 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		fitRef.current = (b, min) => {
 			fitTo(b, 0.25, min)
 			redraw.current()
+			// Side by side, the other board goes there too.
+			const cam = camera.current!
+			shared?.publish({ cx: cam.cx, cy: cam.cy, scale: cam.scale, rot: cam.rot ?? 0 }, me)
 		}
 
 		let frameReq = 0
@@ -719,6 +759,15 @@ export function PcbView({ parser, active = true }: { parser: Parser; active?: bo
 		}
 		g.frame = requestAnimationFrame(step)
 	}
+
+	// Comparing: repaint when the marks or the layers shown change; go to a change picked from the list.
+	useEffect(() => {
+		blit.current()
+	}, [artPaths, partPaths, layers, artwork?.focus])
+	const focusArea = artwork?.focus ? artwork.areas[artwork.focus.area]?.box : undefined
+	useEffect(() => {
+		if (focusArea) fitRef.current(focusArea, 80)
+	}, [artwork?.focus?.seq])
 
 	// Frame the selection when another view or a panel link asks for it, on its side's copper layer (a
 	// bottom-side part on BOTTOM); something on both sides keeps the current layer.

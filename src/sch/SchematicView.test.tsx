@@ -37,7 +37,7 @@ test("renders the sheet SVG with the project file and document name", async () =
 	const render = vi.fn(async () => SVG)
 	const { container } = render_(render)
 	await waitFor(() => expect(container.querySelector('svg [data-record="Wire"]')).toBeTruthy())
-	expect(render).toHaveBeenCalledWith(new Uint8Array([1]), { documentName: "Top.SchDoc", projectBytes: new Uint8Array([2]), projectName: "Board.PrjPcb", channel: null })
+	expect(render).toHaveBeenCalledWith(new Uint8Array([1]), { documentName: "Top.SchDoc", projectBytes: new Uint8Array([2]), projectName: "Board.PrjPcb", channel: null, variantName: null, parameters: { VersionControl_RevNumber: "", VersionControl_ProjFolderRevNumber: "", ModifiedDate: "" } })
 	expect(container.querySelector("svg")!.getAttribute("viewBox")).toBeTruthy()
 })
 

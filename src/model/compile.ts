@@ -31,8 +31,15 @@ export interface CompiledNet {
 	netName: string
 	physicalName: string
 	names: string[] // every name the net carries anywhere (labels, ports, power ports)
+	aliases: NetAlias[] // its names other than the physical one, with the sheet instances that use each
 	occurrences: NetOccurrence[]
 	pins: { component: string; pin: string; path: string }[] // physical designator, pin designator, component source path
+}
+
+// A name a net carries on some sheets that is not its physical name (a sub-block's own "VIN" for 5V).
+export interface NetAlias {
+	name: string
+	instanceIds: string[]
 }
 
 export interface CompiledComponent {
@@ -76,6 +83,10 @@ export interface CompileInput {
 	designatorFormat: string
 	// Optional PCB truth: "<component source path>|<pad>" -> PCB net name, used for physical names.
 	padNets?: Map<string, string>
+	// Optional PCB truth: component source path -> the board's (physical) designator. The board's
+	// annotation wins over the channel format: a sheet placed by several sheet symbols, or a board
+	// annotated on its own, has designators the format does not give.
+	boardDesignators?: Map<string, string>
 }
 
 export function formatDesignator(designator: string, channel: { index: number; name: string } | null, format: string): string {
@@ -117,7 +128,7 @@ class Union {
 	}
 }
 
-export function compileProject({ instances, sheets, designatorFormat, padNets }: CompileInput): CompiledProject {
+export function compileProject({ instances, sheets, designatorFormat, padNets, boardDesignators }: CompileInput): CompiledProject {
 	const local = new Map<string, SheetConnectivity>()
 	const connectivityOf = (docPath: string) => {
 		let c = local.get(docPath)
@@ -275,7 +286,7 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 	for (const inst of instances)
 		for (const c of sheets.get(inst.docPath)?.components ?? []) {
 			const uniquePath = `${pathOf.get(inst.id) ?? ""}\\${c.uniqueId}`
-			const designator = formatDesignator(c.designator, inst.channel, designatorFormat)
+			const designator = boardDesignators?.get(uniquePath) || formatDesignator(c.designator, inst.channel, designatorFormat)
 			designatorOf.set(`${inst.id}#${c.i}`, designator)
 			pathOfComponent.set(`${inst.id}#${c.i}`, uniquePath)
 			components.push({ ...c, id: `${inst.id}#${c.i}`, instanceId: inst.id, designator, logicalDesignator: c.designator, uniquePath })
@@ -286,6 +297,7 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 		occurrences: NetOccurrence[]
 		pins: { component: string; pin: string; path: string }[]
 		powers: string[]
+		used: Map<string, Set<string>> // name -> the instances it is written on
 		labels: { name: string; depth: number }[]
 		ports: { name: string; depth: number }[]
 		harness?: { bundle: string; member: string }
@@ -304,7 +316,7 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 			const root = nets.find(key)
 			let draft = drafts.get(root)
 			if (!draft) {
-				draft = { occurrences: [], pins: [], powers: [], labels: [], ports: [], channels: new Set(), onChannelFreeSheet: false }
+				draft = { occurrences: [], pins: [], powers: [], used: new Map(), labels: [], ports: [], channels: new Set(), onChannelFreeSheet: false }
 				drafts.set(root, draft)
 			}
 			draft.occurrences.push({ instanceId: inst.id, objects: net.objects })
@@ -314,6 +326,10 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 					draft.pins.push({ component: designatorOf.get(`${inst.id}#${pin.component}`) ?? "", pin: pin.designator, path: pathOfComponent.get(`${inst.id}#${pin.component}`) ?? "" })
 			}
 			draft.powers.push(...net.powers)
+			for (const name of [...net.powers, ...net.labels, ...net.ports]) {
+				if (!draft.used.has(name)) draft.used.set(name, new Set())
+				draft.used.get(name)!.add(inst.id)
+			}
 			draft.labels.push(...net.labels.map(name => ({ name, depth: d })))
 			draft.ports.push(...net.ports.map(name => ({ name, depth: d })))
 			draft.harness ??= memberOf.get(key)
@@ -356,8 +372,12 @@ export function compileProject({ instances, sheets, designatorFormat, padNets }:
 			if (best) physicalName = best[0]
 		}
 		const names = [...new Set([...d.powers, ...d.labels.map(l => l.name), ...d.ports.map(p => p.name)])]
+		const aliases = [...d.used]
+			.filter(([name]) => name.toUpperCase() !== physicalName.toUpperCase())
+			.map(([name, ids]) => ({ name, instanceIds: [...ids] }))
+			.sort((a, b) => a.name.localeCompare(b.name))
 		idOfRoot.set(root, result.length)
-		result.push({ id: result.length, netName, physicalName, names, occurrences: d.occurrences, pins: sortedPins })
+		result.push({ id: result.length, netName, physicalName, names, aliases, occurrences: d.occurrences, pins: sortedPins })
 	}
 
 	const netAt: Record<string, Record<number, number>> = {}

@@ -1,4 +1,4 @@
-import { GitCompareArrows, X } from "lucide-react"
+import { GitCompareArrows, History, X } from "lucide-react"
 import { useEffect, useState } from "react"
 import { GitCommitSource } from "../github/commit-source"
 import type { CommitInfo } from "../github/github"
@@ -9,6 +9,7 @@ import type { ProjectSummary } from "../model/load-project"
 import { formatDate } from "./format-date"
 import { openingLabel, useOpening } from "./opening"
 import { Spinner } from "./Spinner"
+import { newerThan } from "./newer-commits"
 import { useAppStore } from "./store"
 
 // The viewer's commit pickers: the open (primary) commit, and with Compare a second one to compare it
@@ -50,6 +51,10 @@ export function CommitSwitcher({ source, project }: { source: GitCommitSource; p
 	}, [source.gh, source.ref.owner, source.ref.repo, prjPath, docPaths])
 
 	const list = [...known.filter(k => !commits.some(c => c.sha === k.sha)), ...commits]
+	// Not the latest: commits after the open one that changed the project (from the history listed so far).
+	const own = known.find(k => k.sha === source.sha)
+	const newer = commits.length && own ? newerThan(commits, source.sha, own.date) : []
+	const more100 = !commits.some(c => c.sha === source.sha) && history?.hasMore ? "+" : ""
 	const go = (sha: string, other: string | null) => navigate({ kind: "ghCommit", owner: source.ref.owner, repo: source.ref.repo, sha, prjPath, vs: other })
 	const more = async () => setCommits([...commits, ...((await history?.loadMore()) ?? [])])
 	// Compare with the commit before the open one in the project's history (else the next newer one).
@@ -89,6 +94,17 @@ export function CommitSwitcher({ source, project }: { source: GitCommitSource; p
 			)}
 			{vs && <span className="switch-tag primary">A</span>}
 			{picker("Commit", opening?.sha ?? source.sha, sha => go(sha, vs))}
+			{!opening && newer.length > 0 && (
+				<button
+					className="stale-commit"
+					onClick={() => go(newer[0]!.sha, vs)}
+					title={`${newer.length}${more100} newer commit${newer.length === 1 ? "" : "s"} changed this project. Newest: ${newer[0]!.sha.slice(0, 7)} · ${formatDate(newer[0]!.date)} · ${newer[0]!.message}. Click to open it.`}
+				>
+					<History size={13} />
+					Not the latest · {newer.length}
+					{more100} newer
+				</button>
+			)}
 			{vs ? (
 				<>
 					<span className="switch-tag secondary">B</span>

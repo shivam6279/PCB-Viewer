@@ -16,6 +16,7 @@ export interface DocBarProps {
 	onTab(tab: ViewTab): void
 	onSelectSheet(id: string): void
 	right?: ReactNode
+	pdf?: { busy: string | null; onExport: (() => void) | undefined } // Export PDF on the SCH tab; no onExport until the project is compiled
 }
 
 const TABS: { id: ViewTab; label: string }[] = [
@@ -36,7 +37,7 @@ export function tabEnabled(project: ProjectSummary, tab: ViewTab): boolean {
 // The tabs in hotkey order: 1 SCH, 2 PCB, 3 3D, 4 BOM.
 export const TAB_ORDER: ViewTab[] = ["sch", "pcb", "3d", "bom"]
 
-export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, right }: DocBarProps) {
+export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, right, pdf }: DocBarProps) {
 	const sheets = flattenHierarchy(project.hierarchy)
 	const hasPcb = project.documents.some(d => d.kind === "pcb" && d.exists)
 	const pcbPanelOpen = useAppStore(s => s.pcbPanelOpen)
@@ -52,6 +53,12 @@ export function DocBar({ project, tab, activeSheetId, onTab, onSelectSheet, righ
 		<div className="docbar">
 			<div className="docbar-left">
 				{tab === "sch" && sheets.length > 0 && <SheetPicker sheets={sheets.map(n => ({ id: n.id, label: `${stripExt(n.fileName)} (${n.displayDesignator})` }))} active={activeSheetId} onPick={onSelectSheet} />}
+				{tab === "sch" && sheets.length > 0 && pdf && (
+					<button className="docbar-tool" disabled={!pdf.onExport} onClick={() => pdf.onExport?.()}>
+						<Download size={16} />
+						{pdf.busy ?? "Export PDF"}
+					</button>
+				)}
 				{tab === "pcb" && hasPcb && (
 					<button className={`docbar-tool${pcbPanelOpen ? " on" : ""}`} onClick={() => useAppStore.getState().setPcbPanelOpen(!pcbPanelOpen)}>
 						<Layers size={16} />

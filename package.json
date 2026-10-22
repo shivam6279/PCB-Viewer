@@ -23,10 +23,12 @@
     "earcut": "^3.2.4",
     "fflate": "^0.8.3",
     "idb-keyval": "^6.3.0",
+    "jspdf": "^4.2.1",
     "lucide-react": "^1.49.0",
     "occt-import-js": "^0.0.23",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "svg2pdf.js": "^2.8.1",
     "three": "^0.186.1",
     "three-mesh-bvh": "^0.9.15",
     "zustand": "^5.0.15"

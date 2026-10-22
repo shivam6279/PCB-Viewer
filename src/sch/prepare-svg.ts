@@ -21,6 +21,10 @@ export function prepareSheetSvg(svgText: string): { markup: string; viewBox: Vie
 	for (const el of [...svg.children])
 		if (el.nodeName === "rect" && el.getAttribute("width") === "100%" && el.getAttribute("height") === "100%") el.remove()
 
+	// Net labels are drawn last, over the wires, buses and parts they sit on, so a name is never hidden.
+	const content = svg.querySelector("[data-sheet-content]")
+	if (content) for (const label of [...content.querySelectorAll(':scope > g[data-k="25"]')]) content.appendChild(label)
+
 	const [x = 0, y = 0, w = 0, h = 0] = (svg.getAttribute("viewBox") ?? "").split(/[\s,]+/).map(Number)
 	svg.removeAttribute("width")
 	svg.removeAttribute("height")

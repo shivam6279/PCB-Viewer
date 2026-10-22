@@ -505,6 +505,88 @@ export function drawObjectOutline(ctx: CanvasRenderingContext2D, camera: PcbCame
 	ctx.restore()
 }
 
+// Comparing: the artwork that differs in its colour: the current layer's filled and outlined (a big
+// piece, a pour, lightly filled), the other layers' outlined only; parts moved, added or removed as
+// their outline; a ring round a change too small to see at this zoom, and a frame round the one picked
+// last.
+export function drawArtworkMark(
+	ctx: CanvasRenderingContext2D,
+	camera: PcbCamera,
+	mark: {
+		pieces: { path: Path2D; color: string; strong: boolean; big: boolean }[]
+		parts: { path: Path2D; color: string }[]
+		moves: { here: number[]; there: number[] }[]
+		areas: number[][]
+		focus: number | null
+	},
+) {
+	const dpr = globalThis.devicePixelRatio || 1
+	const px = dpr / camera.scale
+	ctx.save()
+	applyCamera(ctx, camera, ctx.canvas.width, ctx.canvas.height)
+	ctx.lineWidth = 1.5 * px
+	for (const p of mark.pieces) {
+		if (p.strong) {
+			ctx.fillStyle = p.color
+			ctx.globalAlpha = p.big ? 0.2 : 0.5
+			ctx.fill(p.path, "evenodd")
+		}
+		ctx.globalAlpha = p.strong ? 1 : 0.6
+		ctx.lineWidth = (p.strong ? 1.5 : 1) * px
+		ctx.strokeStyle = p.color
+		ctx.stroke(p.path)
+	}
+	ctx.globalAlpha = 1
+	ctx.lineWidth = 2.5 * px
+	for (const p of mark.parts) {
+		ctx.fillStyle = p.color
+		ctx.globalAlpha = 0.12
+		ctx.fill(p.path)
+		ctx.globalAlpha = 1
+		ctx.strokeStyle = p.color
+		ctx.stroke(p.path)
+	}
+	// A block moved together: its extent here (green), where it is in the other commit (red, dashed),
+	// and an arrow from there to here.
+	const ADDED = "#3fd06a", REMOVED = "#ff4d4f"
+	for (const mv of mark.moves) {
+		const [hx0, hy0, hx1, hy1] = mv.here as [number, number, number, number], [tx0, ty0, tx1, ty1] = mv.there as [number, number, number, number]
+		ctx.lineWidth = 2 * px
+		ctx.setLineDash([5 * px, 4 * px])
+		ctx.strokeStyle = REMOVED
+		ctx.strokeRect(tx0, ty0, tx1 - tx0, ty1 - ty0)
+		ctx.setLineDash([])
+		ctx.strokeStyle = ADDED
+		ctx.fillStyle = ADDED
+		ctx.globalAlpha = 0.08
+		ctx.fillRect(hx0, hy0, hx1 - hx0, hy1 - hy0)
+		ctx.globalAlpha = 1
+		ctx.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0)
+		const fx = (tx0 + tx1) / 2, fy = (ty0 + ty1) / 2, gx = (hx0 + hx1) / 2, gy = (hy0 + hy1) / 2
+		const len = Math.hypot(gx - fx, gy - fy)
+		if (len > 12 * px) {
+			const ux = (gx - fx) / len, uy = (gy - fy) / len, head = Math.min(10 * px, len / 2)
+			ctx.beginPath()
+			ctx.moveTo(fx, fy)
+			ctx.lineTo(gx, gy)
+			ctx.moveTo(gx - ux * head - uy * head * 0.5, gy - uy * head + ux * head * 0.5)
+			ctx.lineTo(gx, gy)
+			ctx.lineTo(gx - ux * head + uy * head * 0.5, gy - uy * head - ux * head * 0.5)
+			ctx.stroke()
+		}
+	}
+	ctx.strokeStyle = "rgba(255, 255, 255, 0.8)"
+	const m = 6 * px
+	mark.areas.forEach(([x0, y0, x1, y1], i) => {
+		const focused = i === mark.focus
+		if (!focused && Math.max(x1! - x0!, y1! - y0!) > 10 * px) return
+		ctx.lineWidth = (focused ? 2 : 1) * px
+		ctx.setLineDash(focused ? [] : [3 * px, 2 * px])
+		ctx.strokeRect(x0! - m, y0! - m, x1! - x0! + 2 * m, y1! - y0! + 2 * m)
+	})
+	ctx.restore()
+}
+
 // Shift-hover: a white line round the hovered nets' copper on the live view, each at its own fade level
 // (a net's line brightens while the one left behind fades). Per layer, the net's copper is one merged
 // shape: stroked, then the shape itself cut back out, so only the outside edge is left. Overlapping

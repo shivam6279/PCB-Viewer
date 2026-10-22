@@ -13,6 +13,14 @@ export interface Repo extends RepoRef {
 	pushedAt: string
 }
 
+// The site's index against GitHub: current, behind (branches GitHub has moved or added since), or not
+// checkable (and why). Dates are ISO; indexedDate is the date of the default branch's indexed head.
+export type IndexFreshness = { repo: string; generatedAt: string; indexedDate: string | null } & (
+	| { status: "current" }
+	| { status: "behind"; branches: { name: string; indexed: string | null; live: string }[]; liveDate: string | null }
+	| { status: "unchecked"; reason: string }
+)
+
 export interface CommitInfo {
 	sha: string
 	message: string // first line
@@ -107,6 +115,43 @@ export class GitHub {
 		return { owner: raw.owner.login, repo: raw.name, defaultBranch: raw.default_branch, private: raw.private, pushedAt: raw.pushed_at }
 	}
 
+
+	// Whether the site's index still has every branch where GitHub has it (null: no index for the
+	// repo). Asks GitHub past every memo; a repo it can't ask about says why.
+	async indexFreshness(r: RepoRef): Promise<IndexFreshness | null> {
+		const idx = await this.index?.repo(r)
+		if (!idx) return null
+		const { generatedAt, branches, defaultBranch } = idx.meta
+		const indexedHead = idx.bySha.get(branches[defaultBranch] ?? "")
+		const base = { repo: `${r.owner}/${r.repo}`, generatedAt, indexedDate: indexedHead?.date ?? null }
+		let live: { name: string; commit: { sha: string } }[]
+		try {
+			live = await this.client.json(`${repoPath(r)}/branches?per_page=100`, { fresh: true })
+		} catch (e) {
+			const kind = e instanceof GitHubError ? e.kind : "other"
+			const reason =
+				kind === "notFound" || kind === "auth"
+					? "GitHub doesn't show this repo without a token (it is private): paste one to check"
+					: kind === "rateLimit"
+						? "GitHub's request limit is used up for now"
+						: kind === "network"
+							? "GitHub couldn't be reached"
+							: e instanceof Error
+								? e.message
+								: String(e)
+			return { status: "unchecked", ...base, reason }
+		}
+		const behind = live.filter(b => branches[b.name] !== b.commit.sha).map(b => ({ name: b.name, indexed: branches[b.name] ?? null, live: b.commit.sha }))
+		if (behind.length === 0) return { status: "current", ...base }
+		// The default branch first, with the date of what GitHub has there (one more request).
+		behind.sort((a, b) => Number(b.name === defaultBranch) - Number(a.name === defaultBranch))
+		const first = behind[0]!
+		const liveDate = await this.client
+			.json<RawCommit>(`${repoPath(r)}/commits/${enc(first.live)}`)
+			.then(c => c.commit.author?.date ?? null)
+			.catch(() => null)
+		return { status: "behind", ...base, branches: behind, liveDate }
+	}
 
 	async branches(r: RepoRef): Promise<string[]> {
 		const idx = await this.index?.repo(r)

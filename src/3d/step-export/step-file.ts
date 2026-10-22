@@ -207,6 +207,26 @@ export function withItem(body: string, item: number): string {
 	return body
 }
 
+// Every product's id and name with `tag` added (and a count, from the second on, where the file names
+// several products alike: "Mid Body", "Mid Body 2"). CAD keeps the parts of an imported assembly by
+// these names: two different parts named alike, in one file or in two files placed in one assembly,
+// reopened as the same part, the other one lost.
+export function tagProducts(entities: StepEntity[], tag: string): StepEntity[] {
+	const seen = new Map<string, number>()
+	return entities.map(e => {
+		if (typeOf(e.body) !== "PRODUCT") return e
+		const args = argsOf(e.body)
+		const key = `${args[0]},${args[1]}`
+		const n = (seen.get(key) ?? 0) + 1
+		seen.set(key, n)
+		const add = `${n > 1 ? ` ${n}` : ""} ${tag}`
+		const tagged = (arg: string | undefined) => (arg && /^'.*'$/s.test(arg) ? (arg === "''" ? `'${add.trim()}'` : `${arg.slice(0, -1)}${add}'`) : arg)
+		args[0] = tagged(args[0])!
+		args[1] = tagged(args[1])!
+		return { id: e.id, body: `PRODUCT(${args.join(",")})` }
+	})
+}
+
 // Records that list styled items, and which of their arguments is the list.
 const STYLE_LISTS: Record<string, number> = {
 	MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION: 1,

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { GitCommitSource } from "../github/commit-source"
 import { useAppStore, type Selection } from "../app/store"
 import { usePane, usePaneData, usePaneSelection, type ViewLink } from "../app/pane"
 import { channelOf, flattenHierarchy, type Channel, type HierarchyNode } from "../model/hierarchy"
@@ -7,8 +8,10 @@ import type { Parser } from "../parse/parser"
 import { basename } from "../source/paths"
 import type { ProjectSource } from "../source/types"
 import { buildPortMenu, classifyClick, highlightObjects, jumpObjects, type ClickAction, type MenuNode } from "./interaction"
-import { PortMenu } from "./PortMenu"
+import { PortMenu, type PopupArea } from "./PortMenu"
+import { PartCard } from "./PartCard"
 import { prepareSheetSvg } from "./prepare-svg"
+import { writeDesignators, writeNetColors, writeNetNames } from "./sheet-text"
 import { createScene, frameObjects, hitTest, markNotFitted, paintOverlay, type Scene } from "./sheet-scene"
 import { notFittedPaths } from "../model/variants"
 import { fitView, panBy, zoomAt, type Size, type ViewBox } from "./viewport"
@@ -22,7 +25,14 @@ const cache = new WeakMap<ProjectSource, Map<string, Promise<Prepared>>>()
 export function loadSheet(source: ProjectSource, project: ProjectSummary, docPath: string, channel: Channel | null, parser: Parser): Promise<Prepared> {
 	let perSource = cache.get(source)
 	if (!perSource) cache.set(source, (perSource = new Map()))
-	const key = channel ? `${docPath}#${channel.name}` : docPath
+	// Title blocks show the variant shown (=VariantName) and the commit (=VersionControl_RevNumber).
+	const variantName = useAppStore.getState().variant
+	const parameters: Record<string, string> = {
+		VersionControl_RevNumber: source instanceof GitCommitSource ? source.sha.slice(0, 7) : "",
+		VersionControl_ProjFolderRevNumber: source instanceof GitCommitSource ? source.sha.slice(0, 7) : "",
+		ModifiedDate: "", // not known here: left blank rather than shown as the raw =ModifiedDate
+	}
+	const key = `${channel ? `${docPath}#${channel.name}` : docPath}|${variantName ?? ""}`
 	let pending = perSource.get(key)
 	if (!pending) {
 		pending = (async () => {
@@ -32,6 +42,8 @@ export function loadSheet(source: ProjectSource, project: ProjectSummary, docPat
 				projectBytes,
 				projectName: project.prjPath ? basename(project.prjPath) : null,
 				channel,
+				variantName,
+				parameters,
 			})
 			return prepareSheetSvg(svg)
 		})()
@@ -41,15 +53,18 @@ export function loadSheet(source: ProjectSource, project: ProjectSummary, docPat
 	return pending
 }
 
-interface MenuState {
+// A popup at the cursor: the sheets a net reaches (click on a net, port or entry), or a part's card
+// (right-click on a part).
+type MenuState = {
 	x: number
 	y: number
-	area: { left: number; top: number; width: number; height: number } // the view on the page, for the menu (a body portal)
-	netId: number
-	items: MenuNode[]
-}
+	area: PopupArea // the view on the page, for the popup (a body portal)
+} & ({ kind: "sheets"; netId: number; items: MenuNode[] } | { kind: "part"; componentId: string })
 
 const CLICK_SLOP = 4 // px a press may move and still count as a click rather than a pan
+
+// The last sheet file shown and its view: going from one channel of a sheet to another keeps the view.
+let lastShown: { source: ProjectSource; docPath: string; view: ViewBox } | null = null
 
 export function SchematicView({ source, project, node, parser }: {
 	source: ProjectSource
@@ -60,6 +75,7 @@ export function SchematicView({ source, project, node, parser }: {
 	const [state, setState] = useState<LoadState>({ status: "loading" })
 	const [hover, setHover] = useState<ClickAction | null>(null)
 	const [menu, setMenu] = useState<MenuState | null>(null)
+	const [tip, setTip] = useState<{ x: number; y: number; names: string[] } | null>(null)
 	const frame = useRef<HTMLDivElement>(null)
 	const host = useRef<HTMLDivElement>(null)
 	const view = useRef<ViewBox | null>(null)
@@ -92,7 +108,7 @@ export function SchematicView({ source, project, node, parser }: {
 		return () => {
 			current = false
 		}
-	}, [source, project, docPath, channelName, node.id, node.fileName, parser])
+	}, [source, project, docPath, channelName, node.id, node.fileName, parser, variant])
 
 	// Pointer handlers are bound once per mounted sheet; these refs give them the current render's view.
 	const actionAt = (x: number, y: number): ClickAction | null => {
@@ -101,24 +117,44 @@ export function SchematicView({ source, project, node, parser }: {
 		const hit = hitTest(sc, x, y)
 		return hit ? classifyClick(hit, node, docPath ? data.sheets[docPath] : undefined, data.compiled) : null
 	}
-	const handlers = useRef({ click: (_x: number, _y: number) => {}, hover: (_x: number, _y: number) => {} })
+	const handlers = useRef({ click: (_x: number, _y: number) => {}, context: (_x: number, _y: number) => {}, hover: (_x: number, _y: number) => {} })
+	const popupAt = (x: number, y: number) => {
+		const r = frame.current!.getBoundingClientRect()
+		return { x: x - r.left, y: y - r.top, area: { left: r.left, top: r.top, width: r.width, height: r.height } }
+	}
+	const sheetsMenu = (x: number, y: number, netId: number) => {
+		const net = data!.compiled.nets[netId]!
+		useAppStore.getState().select({ kind: "net", netId })
+		setMenu({ ...popupAt(x, y), kind: "sheets", netId, items: buildPortMenu(project.hierarchy, net, node.id) })
+	}
 	handlers.current.click = (x, y) => {
 		const { select, selectSheet } = useAppStore.getState()
 		const action = actionAt(x, y)
 		setMenu(null)
 		if (!action) return select(null)
-		if (action.kind === "net") return select({ kind: "net", netId: action.netId })
 		if (action.kind === "bundle") return select({ kind: "bundle", bundleId: action.bundleId })
 		if (action.kind === "component") return select({ kind: "component", id: action.id })
 		if (action.kind === "symbol") return selectSheet(action.childId)
-		const net = data!.compiled.nets[action.netId]!
-		const r = frame.current!.getBoundingClientRect()
-		select({ kind: "net", netId: action.netId })
-		setMenu({ x: x - r.left, y: y - r.top, area: { left: r.left, top: r.top, width: r.width, height: r.height }, netId: action.netId, items: buildPortMenu(project.hierarchy, net, node.id) })
+		// A port or sheet entry: the sheets its net is on. A wire, label or pin selects the net.
+		if (action.kind === "port") sheetsMenu(x, y, action.netId)
+		else select({ kind: "net", netId: action.netId })
+	}
+	handlers.current.context = (x, y) => {
+		const action = actionAt(x, y)
+		setMenu(null)
+		if (action?.kind === "component") {
+			useAppStore.getState().select({ kind: "component", id: action.id })
+			setMenu({ ...popupAt(x, y), kind: "part", componentId: action.id })
+		} else if (action?.kind === "net" || action?.kind === "port") sheetsMenu(x, y, action.netId)
 	}
 	handlers.current.hover = (x, y) => {
 		const action = actionAt(x, y)
 		setHover(prev => (JSON.stringify(prev) === JSON.stringify(action) ? prev : action))
+		// A net called something else on this sheet than its physical name: the local name(s) as a tooltip.
+		const net = action && (action.kind === "net" || action.kind === "port") ? data?.compiled.nets[action.netId] : undefined
+		const names = net?.aliases.filter(a => a.instanceIds.includes(node.id)).map(a => a.name) ?? []
+		const r = frame.current?.getBoundingClientRect()
+		setTip(names.length > 0 && r ? { x: x - r.left, y: y - r.top, names } : null)
 	}
 
 	// Mount the SVG and wire pan/zoom/click whenever a sheet becomes ready.
@@ -136,6 +172,7 @@ export function SchematicView({ source, project, node, parser }: {
 		const me = {}
 		const show = (v: ViewBox) => {
 			view.current = v
+			if (!link && docPath) lastShown = { source, docPath, view: v }
 			svg.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`)
 			// Sheet units per screen pixel ("meet" fit): CSS widths in sheet units with a screen-pixel floor.
 			const s = size()
@@ -150,10 +187,11 @@ export function SchematicView({ source, project, node, parser }: {
 		const fit = () => apply(fitView(state.sheet.viewBox, size()))
 		const limits = { minW: state.sheet.viewBox.w / 200, maxW: state.sheet.viewBox.w * 10 }
 		if (link?.last) show(link.last.value)
+		else if (!link && lastShown && lastShown.source === source && lastShown.docPath === docPath) show(lastShown.view)
 		else fit()
 
 		// The port menu floats inside the frame; its own pointer events are not the canvas's.
-		const inMenu = (e: Event) => (e.target as Element | null)?.closest?.(".port-menu") != null
+		const inMenu = (e: Event) => (e.target as Element | null)?.closest?.(".sch-popup") != null
 		const onWheel = (e: WheelEvent) => {
 			if (inMenu(e)) return
 			e.preventDefault()
@@ -177,18 +215,23 @@ export function SchematicView({ source, project, node, parser }: {
 				drag.moved = true
 				frameEl.classList.add("panning")
 				setMenu(null)
+				setTip(null)
 			}
 			apply(panBy(view.current!, e.clientX - drag.x, e.clientY - drag.y, size()))
 			drag.x = e.clientX
 			drag.y = e.clientY
 		}
 		const onUp = (e: PointerEvent) => {
-			const click = drag !== null && !drag.moved && drag.button === 0 && e.type === "pointerup"
+			const click = drag !== null && !drag.moved && e.type === "pointerup" ? drag.button : null
 			drag = null
 			frameEl.classList.remove("panning")
-			if (click) handlers.current.click(e.clientX, e.clientY)
+			if (click === 0) handlers.current.click(e.clientX, e.clientY)
+			if (click === 2) handlers.current.context(e.clientX, e.clientY)
 		}
-		const onLeave = () => setHover(null)
+		const onLeave = () => {
+			setHover(null)
+			setTip(null)
+		}
 		const onMenu = (e: Event) => e.preventDefault()
 		// Keep the zoom when the panel resizes; only the view's aspect follows the frame.
 		const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
@@ -228,20 +271,23 @@ export function SchematicView({ source, project, node, parser }: {
 		const sc = scene.current
 		const colors = data?.wireColors[node.id]
 		if (!sc || state.status !== "ready" || !colors) return
-		for (const el of [...sc.content.querySelectorAll("[data-net-color]")]) el.remove()
-		const bands = document.createDocumentFragment()
-		for (const [i, color] of Object.entries(colors)) {
-			const g = sc.byIndex.get(Number(i))
-			for (const line of g?.querySelectorAll("polyline:not(.hit)") ?? []) {
-				const band = line.cloneNode(false) as SVGElement
-				band.removeAttribute("data-record")
-				band.setAttribute("data-net-color", "")
-				band.setAttribute("stroke", color)
-				band.setAttribute("stroke-width", "5.1")
-				bands.appendChild(band)
-			}
-		}
-		sc.content.insertBefore(bands, sc.content.firstChild)
+		writeNetColors(sc.content, colors)
+	}, [state, data, node.id])
+
+	// Physical designators: one drawing serves every channel of a sheet, and its designators are the
+	// sheet's own (TVS1); this instance's parts are named as compiled (TVS1_CAN1, the board's).
+	useEffect(() => {
+		const sc = scene.current
+		if (!sc || state.status !== "ready" || !data) return
+		writeDesignators(sc.content, data.compiled, node.id)
+	}, [state, data, node.id])
+
+	// Net labels and power ports name the net by its physical name; the one written on this sheet, if
+	// different, shows as a tooltip on hover.
+	useEffect(() => {
+		const sc = scene.current
+		if (!sc || state.status !== "ready" || !data) return
+		writeNetNames(sc.content, data.compiled, node.id)
 	}, [state, data, node.id])
 
 	// The shown variant's not-fitted parts: greyed, with a red cross over the body.
@@ -276,7 +322,7 @@ export function SchematicView({ source, project, node, parser }: {
 			selectedOwner: selection?.kind === "component" ? ownerOf(selection.id) : null,
 			hoverNet: hoverIsSelection ? null : lit(hover),
 			hoverOwner: hover?.kind === "component" ? ownerOf(hover.id) : hover?.kind === "symbol" ? hover.symbolI : null,
-			diff: mark && !mark.mostly ? { indices: [...mark.ids], tone: mark.tone } : null,
+			diff: mark && !mark.mostly ? { indices: [...mark.ids], ghosts: mark.ghosts, moves: mark.moves ?? [], dim: mark.dim } : null,
 		})
 		frame.current?.classList.toggle("pointing", hover !== null)
 	}, [state, data, selection, hover, node.id, mark])
@@ -291,12 +337,27 @@ export function SchematicView({ source, project, node, parser }: {
 
 	const jump = (instanceId: string) => {
 		setMenu(null)
-		if (!data || !menu) return
+		if (!data || menu?.kind !== "sheets") return
 		const target = flattenHierarchy(project.hierarchy).find(n => n.id === instanceId)
 		const net = data.compiled.nets[menu.netId]!
 		const sheet = target?.docPath ? data.sheets[target.docPath] : undefined
 		useAppStore.getState().jumpTo(instanceId, jumpObjects(net, instanceId, sheet), { kind: "net", netId: menu.netId })
 	}
+
+	const closeMenu = useCallback(() => setMenu(null), [])
+	const part = menu?.kind === "part" ? data?.compiled.components.find(c => c.id === menu.componentId) : undefined
+	const hasPcb = project.documents.some(d => d.kind === "pcb" && d.exists)
+	const partActions = part
+		? [
+				...(hasPcb
+					? [
+							{ label: "Show on PCB", run: () => useAppStore.getState().showOnPcb({ kind: "component", id: part.id }) },
+							{ label: "Show in 3D", run: () => useAppStore.getState().showOn3d({ kind: "component", id: part.id }) },
+						]
+					: []),
+				...(data?.bom ? [{ label: "Show in BOM", run: () => useAppStore.getState().setTab("bom") }] : []),
+			]
+		: []
 
 	const netColorsOn = useAppStore(s => s.netColors.sch)
 	return (
@@ -304,7 +365,15 @@ export function SchematicView({ source, project, node, parser }: {
 			<div className="sch-host" ref={host} data-net-colors={netColorsOn ? "on" : "off"} />
 			{state.status === "loading" && <div className="view-message">Loading {node.label}…</div>}
 			{state.status === "error" && <div className="view-message error">{state.message}</div>}
-			{menu && <PortMenu x={menu.x} y={menu.y} area={menu.area} items={menu.items} onPick={jump} onClose={() => setMenu(null)} />}
+			{tip && !menu && (
+				<div className="sch-tip" style={{ left: tip.x + 14, top: tip.y + 18 }}>
+					On this sheet: {tip.names.join(", ")}
+				</div>
+			)}
+			{menu?.kind === "sheets" && data && (
+				<PortMenu key={`${menu.x},${menu.y}`} x={menu.x} y={menu.y} area={menu.area} title={data.compiled.nets[menu.netId]?.physicalName.replaceAll("\\", "")} items={menu.items} onPick={jump} onClose={closeMenu} />
+			)}
+			{menu?.kind === "part" && part && <PartCard key={`${menu.x},${menu.y}`} x={menu.x} y={menu.y} area={menu.area} component={part} actions={partActions} onClose={closeMenu} />}
 		</div>
 	)
 }

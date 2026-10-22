@@ -41,6 +41,7 @@ export class StepWriter {
 	private origin: number | null = null
 	private points = new Map<string, number>()
 	private dirs = new Map<string, number>()
+	private digest = FNV_OFFSET
 
 	add(body: string): number {
 		const id = this.next++
@@ -61,7 +62,14 @@ export class StepWriter {
 
 	private line(text: string) {
 		this.pending.push(text)
+		this.digest = fnv(text, this.digest)
 		if (this.pending.length >= 20000) this.flush()
+	}
+
+	// A short tag for everything written so far: the same records give the same tag. Part names carry
+	// one (see exportStep), so parts from two different files never share a name.
+	tag(): string {
+		return hex(this.digest)
 	}
 
 	private flush() {
@@ -105,6 +113,18 @@ export class StepWriter {
 	// The axis at the origin, shared by every representation written here.
 	originAxis(): number {
 		return (this.origin ??= this.axis([0, 0, 0]))
+	}
+
+	// Starts a part of its own: the records written from here share nothing with those before (units,
+	// origin, points, directions), as in a STEP file of one part. CAD that re-reads the file finds each
+	// part by its own records: parts sharing them were lost on reopening (a board's own layers gone,
+	// mates on them broken), while the parts copied whole from their own files stayed.
+	beginPart() {
+		this.context = null
+		this.appContext = null
+		this.origin = null
+		this.points = new Map()
+		this.dirs = new Map()
 	}
 
 	private application(): number {
@@ -339,6 +359,18 @@ export class StepWriter {
 		return out
 	}
 }
+
+// FNV-1a (32 bit) over a string's char codes or a file's bytes, continuing from `h`.
+const FNV_OFFSET = 0x811c9dc5
+function fnv(data: string | Uint8Array, h = FNV_OFFSET): number {
+	if (typeof data === "string") for (let i = 0; i < data.length; i++) h = Math.imul(h ^ data.charCodeAt(i), 0x01000193)
+	else for (let i = 0; i < data.length; i++) h = Math.imul(h ^ data[i]!, 0x01000193)
+	return Math.imul(h ^ 10, 0x01000193) // the line's end
+}
+const hex = (h: number) => (h >>> 0).toString(16).padStart(8, "0").slice(0, 6)
+
+// The tag of a file's contents (as StepWriter.tag).
+export const contentTag = (bytes: Uint8Array) => hex(fnv(bytes))
 
 function latin1(text: string): Uint8Array {
 	const out = new Uint8Array(text.length)

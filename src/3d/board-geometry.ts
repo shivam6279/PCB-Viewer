@@ -10,6 +10,7 @@ import * as ClipperNs from "clipper-lib"
 import earcut from "earcut"
 import type { PcbObject, PcbScene, Prim } from "../pcb/scene"
 import type { Board3d, StackLayer } from "./board3d"
+import { ARTWORK_CELL, ARTWORK_DRILLS, ARTWORK_OUTLINE } from "../diff/artwork-keys"
 
 export const MM = 0.0254
 export const SCALE = 100 // clipper units per mil
@@ -403,25 +404,27 @@ interface Context {
 	cx: number
 	cy: number
 	copper: StackLayer[] // copper layers, top to bottom
+	keys: string[] // their keys
 	z: (depthMils: number) => number
 }
 
 function context(scene: PcbScene, board: Board3d): Context {
 	const [x0, y0, x1, y1] = scene.bounds
-	return { scene, board, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, copper: board.stack.filter(l => l.kind === "copper"), z: d => -d * MM }
+	const copper = board.stack.filter(l => l.kind === "copper")
+	return { scene, board, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, copper, keys: copper.map(l => l.key), z: d => -d * MM }
 }
 
 // The copper layers an object is on: its own, or every layer of a via / through-hole pad's span.
 function layersOf(ctx: Context, obj: PcbObject): string[] {
 	if (!obj.span) return [obj.layer]
-	const keys = ctx.copper.map(l => l.key)
+	const keys = ctx.keys
 	const a = keys.indexOf(obj.span[0]), b = keys.indexOf(obj.span[1])
 	if (a < 0 || b < 0) return keys
 	return keys.slice(Math.min(a, b), Math.max(a, b) + 1)
 }
 
 function drillsOf(ctx: Context): Drill[] {
-	const keys = ctx.copper.map(l => l.key)
+	const keys = ctx.keys
 	const out: Drill[] = []
 	for (const o of ctx.scene.objects) {
 		for (const h of o.holes) {
@@ -447,8 +450,10 @@ function drillsOf(ctx: Context): Drill[] {
 // A solder mask's openings: pads and vias by their mask expansion, shapes drawn on the mask layer
 // itself, and every hole a via is not tented over. For the export, which can leave things out: with no
 // copper the mask covers everything but the drilled holes (not tented); an undrilled via's hole it
-// covers (its pad's opening, untented, stays: the copper shows, solid).
-function maskOpenings(ctx: Context, side: "top" | "bottom", layerKey: string, drills: Drill[], { copper = true, viaHoles = true } = {}): Paths64 {
+// covers (its pad's opening, untented, stays: the copper shows, solid). exact: pads and untented vias
+// open by their copper alone, no expansion (the export's exposed copper: no track leaving a pad, no bare
+// board around it, in the margin).
+function maskOpenings(ctx: Context, side: "top" | "bottom", layerKey: string, drills: Drill[], { copper = true, viaHoles = true, exact = false } = {}): Paths64 {
 	const openings = ([] as Paths64)
 	if (!copper) {
 		for (const d of drills) if ((viaHoles || d.kind !== "via") && !(side === "top" ? d.tentTop : d.tentBottom)) openings.push(d.path)
@@ -461,7 +466,7 @@ function maskOpenings(ctx: Context, side: "top" | "bottom", layerKey: string, dr
 		const paths = ([] as Paths64)
 		for (const p of o.prims) primPaths(p, paths)
 		if (!paths.length) continue
-		const grown = expansion ? inflate(union(paths), expansion * SCALE, true) : paths
+		const grown = expansion && !exact ? inflate(union(paths), expansion * SCALE, true) : paths
 		for (const p of grown) openings.push(p)
 	}
 	for (const d of drills) if (!(side === "top" ? d.tentTop : d.tentBottom) && (viaHoles || d.kind !== "via")) openings.push(d.path)
@@ -724,11 +729,13 @@ const EXPORT_TOLERANCE = 0.2
 // solder masks (the board minus their openings) and the silkscreen (clipped to the board), as
 // outlines with holes; and the plated holes that get a barrel.
 // exposedOnly: the copper only where the solder mask leaves it open (all the copper a board with a
-// mask shows), its pours and tracks under the mask left out.
+// mask shows), its pours and tracks under the mask left out; pads and untented vias open by their
+// copper alone (see maskOpenings), shapes drawn on the mask layer as drawn.
+// wholeMask: each solder mask one face, not cut into tiles (see TILE_POINTS).
 export function outerLayers(
 	scene: PcbScene,
 	board: Board3d,
-	{ viaHoles, exposedOnly, copper: withCopper = true, tolerance = EXPORT_TOLERANCE }: { viaHoles: boolean; exposedOnly: boolean; copper?: boolean; tolerance?: number },
+	{ viaHoles, exposedOnly, copper: withCopper = true, tolerance = EXPORT_TOLERANCE, wholeMask = true }: { viaHoles: boolean; exposedOnly: boolean; copper?: boolean; tolerance?: number; wholeMask?: boolean },
 ): OuterLayers {
 	return withTolerance(tolerance, () => {
 		const ctx = context(scene, board)
@@ -750,7 +757,7 @@ export function outerLayers(
 			const key = maskKey(side)
 			// Never past the board's edge (a track's round end run off it, say).
 			const onBoard = run(ClipperLib.ClipType.ctIntersection, union(paths), outline)
-			const copper = exposedOnly && key ? run(ClipperLib.ClipType.ctIntersection, onBoard, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles })) : onBoard
+			const copper = exposedOnly && key ? run(ClipperLib.ClipType.ctIntersection, onBoard, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles, exact: true })) : onBoard
 			const through = drills.filter(d => d.from <= li && d.to >= li)
 			return regionsOf(difference(copper, pathsOf(through)))
 		}
@@ -765,7 +772,7 @@ export function outerLayers(
 			if (!key) return []
 			// Openings over what the export leaves out are closed: no copper, no openings but the holes;
 			// a via left solid is covered.
-			return regionsOf(difference(outline, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles })))
+			return regionsOf(difference(outline, maskOpenings(ctx, side, key, all, { copper: withCopper, viaHoles, exact: exposedOnly })), wholeMask)
 		}
 		const barrels: OuterLayers["barrels"] = []
 		for (const o of scene.objects) {
@@ -783,8 +790,9 @@ export function outerLayers(
 }
 
 // A polygon tree as regions (islands inside holes become regions of their own), near-duplicate and
-// collinear points dropped.
-function regionsOf(tree: PolyTree64): LayerRegion[] {
+// collinear points dropped. byRing: tiled only for a long ring (see TILE_POINTS), else for its points
+// in all.
+function regionsOf(tree: PolyTree64, byRing = false): LayerRegion[] {
 	const out: LayerRegion[] = []
 	const flat = (ring: Path64, outer: boolean) => {
 		const clean = ClipperLib.Clipper.CleanPolygon(ring, 1.5)
@@ -799,7 +807,7 @@ function regionsOf(tree: PolyTree64): LayerRegion[] {
 	const visit = (node: PolyPathBase) => {
 		for (const child of node.Childs()) {
 			if (child.IsHole()) continue
-			const points = child.Contour().length + child.Childs().reduce((n, h) => n + h.Contour().length, 0)
+			const points = byRing ? Math.max(child.Contour().length, ...child.Childs().map(h => h.Contour().length)) : child.Contour().length + child.Childs().reduce((n, h) => n + h.Contour().length, 0)
 			if (points > TILE_POINTS) for (const tile of tiles(child, Math.ceil(Math.sqrt(points / TILE_POINTS)))) visit(tile)
 			else add(child)
 			for (const hole of child.Childs()) visit(hole)
@@ -812,7 +820,10 @@ function regionsOf(tree: PolyTree64): LayerRegion[] {
 // A region bigger than this many points (a ground pour: Cubli's has ~8000; a solder mask, the whole
 // board) is cut into tiles for export: CAD kernels check a face's boundary in time that grows much
 // faster than its size (reading Cubli's copper took OpenCascade 100 s with its two pours whole). Each
-// seam is an edge in CAD, so the tiles are as large as that allows.
+// seam is an edge in CAD, so the tiles are as large as that allows. A solder mask can instead stay one
+// face, tiled only for a ring this long (its rings are the board's edge and a small opening per pad):
+// no seams drawn across the board, but slower to read (Cubli's board layers: OpenCascade 57 s, 28 s
+// tiled).
 const TILE_POINTS = 2000
 
 // A polygon (with its holes, not its islands) cut by an n x n grid over its extent: a tree per cell.
@@ -839,4 +850,200 @@ function tiles(node: PolyPathBase, n: number): PolyTree64[] {
 			out.push(tile)
 		}
 	return out
+}
+
+// --- artwork, for comparing two commits -------------------------------------------------------------
+
+// What a fab gets: each copper layer's copper with its drills cut out, each solder mask's openings,
+// every other drawn layer's shapes (silk, paste, mechanical), the drills. Not the keep-out layer or 3D
+// bodies. How the file splits it into objects does not matter: three tracks end to end are one.
+// Only the objects given are used.
+// A context with no stack (no depths): the copper layers' order from the scene's layers.
+function flatContext(scene: PcbScene, objects: PcbObject[]): Context {
+	const keys = scene.layers.filter(l => l.group === "copper").sort((a, b) => a.stack - b.stack).map(l => l.key)
+	return { scene: { ...scene, objects }, board: null as never, cx: 0, cy: 0, copper: [], keys, z: d => -d * MM }
+}
+
+function layerArtwork(scene: PcbScene, objects: PcbObject[]): Map<string, Paths64> {
+	const ctx = flatContext(scene, objects)
+	const keys = ctx.keys
+	const drills = drillsOf(ctx)
+	const masks = new Set(scene.layers.filter(l => l.group === "mask").map(l => l.key))
+	const drawn = new Map<string, Paths64>()
+	for (const o of objects) {
+		if (o.kind === "body" || o.layer === "KEEPOUT" || masks.has(o.layer)) continue
+		for (const layer of layersOf(ctx, o)) {
+			let paths = drawn.get(layer)
+			if (!paths) drawn.set(layer, (paths = ([] as Paths64)))
+			for (const p of o.prims) primPaths(p, paths)
+		}
+	}
+	const out = new Map<string, Paths64>()
+	for (const [layer, paths] of drawn) {
+		const li = keys.indexOf(layer)
+		out.set(layer, li < 0 ? union(paths) : run(ClipperLib.ClipType.ctDifference, union(paths), pathsOf(drills.filter(d => d.from <= li && d.to >= li))))
+	}
+	for (const key of masks) out.set(key, maskOpenings(ctx, scene.layers.find(l => l.key === key)!.side === "bottom" ? "bottom" : "top", key, drills))
+	out.set(ARTWORK_DRILLS, union(pathsOf(drills)))
+	return out
+}
+
+// One connected piece of artwork found in only one of the two commits: its outline and holes (flat
+// x,y lists, board mils) and its extent. A piece bigger than a cell (ARTWORK_CELL) each way also says
+// where it lies in each cell of a grid it reaches into: a pour changed along its whole edge is then a
+// change in each place, not one across the board.
+export interface ArtworkPiece {
+	layer: string
+	side: "a" | "b"
+	rings: number[][]
+	box: [number, number, number, number]
+	cells?: [number, number, number, number][]
+}
+
+const ARTWORK_TOLERANCE = 0.1 // mils: curves need not be finer to compare
+const ARTWORK_THIN = 1 // mils: a difference thinner than this on average is rounding, not a change
+
+const boxOfPath = (path: Path64): [number, number, number, number] => {
+	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+	for (const q of path) (x0 = Math.min(x0, q.X)), (y0 = Math.min(y0, q.Y)), (x1 = Math.max(x1, q.X)), (y1 = Math.max(y1, q.Y))
+	return [x0 / SCALE, y0 / SCALE, x1 / SCALE, y1 / SCALE]
+}
+
+const perimeter = (path: Path64) => {
+	let p = 0
+	for (let i = 0; i < path.length; i++) {
+		const a = path[i]!, b = path[(i + 1) % path.length]!
+		p += Math.hypot(b.X - a.X, b.Y - a.Y)
+	}
+	return p
+}
+
+// The regions of a difference (each outline with its holes; an island in a hole is one of its own),
+// hairline slivers dropped: curves cut into chords at other points, a shape nudged by a fraction of a
+// mil. A region's mean width is twice its area over its perimeter.
+function regionsOfDifference(type: ClipperNs.ClipType, subject: Paths64, clip: Paths64): PolyPathBase[] {
+	const c = new ClipperLib.Clipper()
+	c.AddPaths(subject, ClipperLib.PolyType.ptSubject, true)
+	if (clip.length) c.AddPaths(clip, ClipperLib.PolyType.ptClip, true)
+	const tree = new ClipperLib.PolyTree()
+	c.Execute(type, tree, NONZERO, NONZERO)
+	const out: PolyPathBase[] = []
+	const visit = (node: PolyPathBase) => {
+		for (const child of node.Childs()) {
+			if (!child.IsHole()) {
+				const rings = [child.Contour(), ...child.Childs().map(h => h.Contour())]
+				const area = Math.abs(ClipperLib.Clipper.Area(rings[0]!)) - rings.slice(1).reduce((n, r) => n + Math.abs(ClipperLib.Clipper.Area(r)), 0)
+				const around = rings.reduce((n, r) => n + perimeter(r), 0)
+				if (around > 0 && (2 * area) / around >= ARTWORK_THIN * SCALE) out.push(child)
+			}
+			visit(child)
+		}
+	}
+	visit(tree)
+	return out
+}
+
+// Where two boards' artwork can differ, as boxes (x0, y0, x1, y1, board mils): around each object
+// found in only one of them (changedA, changedB), with its mask opening. Not around a whole polygon
+// pour that was poured again (re-pours change every pour on the board, and each spans most of it):
+// there, only where the layer's poured copper itself differs.
+function changeBoxes(a: PcbScene, b: PcbScene, changedA: PcbObject[], changedB: PcbObject[]): number[][] {
+	const boxes: number[][] = []
+	const pourLayers = new Set<string>()
+	for (const o of [...changedA, ...changedB]) {
+		if (o.pour) {
+			pourLayers.add(o.layer)
+			continue
+		}
+		const m = Math.max(o.mask?.top ?? 0, o.mask?.bottom ?? 0, 0) + 1
+		boxes.push([o.bbox[0] - m, o.bbox[1] - m, o.bbox[2] + m, o.bbox[3] + m])
+	}
+	const poured = (s: PcbScene, layer: string) => {
+		const paths = ([] as Paths64)
+		for (const o of s.objects) if (o.pour && o.layer === layer) for (const p of o.prims) primPaths(p, paths)
+		return union(paths)
+	}
+	for (const layer of pourLayers)
+		for (const node of regionsOfDifference(ClipperLib.ClipType.ctXor, poured(a, layer), poured(b, layer))) {
+			const [x0, y0, x1, y1] = boxOfPath(node.Contour())
+			boxes.push([x0 - 1, y0 - 1, x1 + 1, y1 + 1])
+		}
+	return boxes
+}
+
+// Where a big piece lies in each grid cell it reaches into (the extent of its part there).
+function cellsOf(node: PolyPathBase, box: [number, number, number, number]): [number, number, number, number][] {
+	const out: [number, number, number, number][] = []
+	const rings = [node.Contour(), ...node.Childs().map(h => h.Contour())]
+	for (let gx = Math.floor(box[0] / ARTWORK_CELL); gx * ARTWORK_CELL <= box[2]; gx++)
+		for (let gy = Math.floor(box[1] / ARTWORK_CELL); gy * ARTWORK_CELL <= box[3]; gy++) {
+			const x0 = gx * ARTWORK_CELL, y0 = gy * ARTWORK_CELL, x1 = x0 + ARTWORK_CELL, y1 = y0 + ARTWORK_CELL
+			const part = run(ClipperLib.ClipType.ctIntersection, rings, [[pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)]])
+			if (!part.length) continue
+			const b = part.map(boxOfPath)
+			out.push([Math.min(...b.map(q => q[0])), Math.min(...b.map(q => q[1])), Math.max(...b.map(q => q[2])), Math.max(...b.map(q => q[3]))])
+		}
+	return out
+}
+
+// The artwork in only one of two boards (changedA, changedB: the objects in only one of them; the
+// artwork can differ only near those) and the board's shape, if that changed. copper: B's key for each
+// of A's copper layers that B has too (layers are paired by name: a stack rearranged renumbers them);
+// a copper layer in only one board is left out (it is one change, the layer). Pieces carry A's keys.
+export function artworkDifference(a: PcbScene, b: PcbScene, changedA: PcbObject[], changedB: PcbObject[], copper: Map<string, string>): ArtworkPiece[] {
+	return withTolerance(ARTWORK_TOLERANCE, () => {
+		const boxes = changeBoxes(a, b, changedA, changedB)
+		// The objects that reach into a box (with their mask openings), found through a grid of the boxes.
+		const GRID = 200
+		const grid = new Map<string, number[][]>()
+		for (const box of boxes)
+			for (let gx = Math.floor(box[0]! / GRID); gx <= Math.floor(box[2]! / GRID); gx++)
+				for (let gy = Math.floor(box[1]! / GRID); gy <= Math.floor(box[3]! / GRID); gy++) {
+					const k = `${gx},${gy}`
+					const list = grid.get(k)
+					if (list) list.push(box)
+					else grid.set(k, [box])
+				}
+		const near = (scene: PcbScene) =>
+			scene.objects.filter(o => {
+				const m = Math.max(o.mask?.top ?? 0, o.mask?.bottom ?? 0, 0) + 1
+				const x0 = o.bbox[0] - m, y0 = o.bbox[1] - m, x1 = o.bbox[2] + m, y1 = o.bbox[3] + m
+				for (let gx = Math.floor(x0 / GRID); gx <= Math.floor(x1 / GRID); gx++)
+					for (let gy = Math.floor(y0 / GRID); gy <= Math.floor(y1 / GRID); gy++)
+						if (grid.get(`${gx},${gy}`)?.some(([bx0, by0, bx1, by1]) => x0 <= bx1! && x1 >= bx0! && y0 <= by1! && y1 >= by0!)) return true
+				return false
+			})
+		const isCopper = (s: PcbScene) => new Set(s.layers.filter(l => l.group === "copper").map(l => l.key))
+		const copperA = isCopper(a), copperB = isCopper(b)
+		const toA = new Map([...copper].map(([ka, kb]) => [kb, ka]))
+		const keep = (art: Map<string, Paths64>, own: Set<string>, rename?: Map<string, string>) => {
+			const out = new Map<string, Paths64>()
+			for (const [k, p] of art) {
+				if (!own.has(k)) out.set(k, p)
+				else if (!rename ? copper.has(k) : rename.has(k)) out.set(rename?.get(k) ?? k, p)
+			}
+			return out
+		}
+		// Outside the boxes both boards are drawn from the same objects: nothing differs there.
+		const artA = keep(layerArtwork(a, near(a)), copperA), artB = keep(layerArtwork(b, near(b)), copperB, toA)
+		const shape = (s: PcbScene) => JSON.stringify([s.outline, s.cutouts])
+		if (shape(a) !== shape(b)) {
+			artA.set(ARTWORK_OUTLINE, boardOutline(flatContext(a, [])))
+			artB.set(ARTWORK_OUTLINE, boardOutline(flatContext(b, [])))
+		}
+		const out: ArtworkPiece[] = []
+		const flat = (ring: Path64) => ring.flatMap(q => [q.X / SCALE, q.Y / SCALE])
+		for (const layer of new Set([...artA.keys(), ...artB.keys()])) {
+			const pa = artA.get(layer) ?? [], pb = artB.get(layer) ?? []
+			for (const [side, from, minus] of [["a", pa, pb], ["b", pb, pa]] as const) {
+				if (!from.length) continue
+				for (const node of regionsOfDifference(ClipperLib.ClipType.ctDifference, from, minus)) {
+					const box = boxOfPath(node.Contour())
+					const big = box[2] - box[0] > ARTWORK_CELL || box[3] - box[1] > ARTWORK_CELL
+					out.push({ layer, side, rings: [flat(node.Contour()), ...node.Childs().map(h => flat(h.Contour()))], box, ...(big ? { cells: cellsOf(node, box) } : {}) })
+				}
+			}
+		}
+		return out
+	})
 }

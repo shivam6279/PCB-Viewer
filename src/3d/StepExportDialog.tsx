@@ -6,13 +6,16 @@ import { choiceApplies, estimateBytes, STEP_OPTIONS_KEY, stepPreviewName, STEP_Q
 
 type Toggle = Exclude<keyof StepExportOptions, "quality">
 
-// Each setting (copperUnderMask only applies with both copper and mask: see choiceApplies).
-const CHOICES: { key: Toggle; label: string; indent?: boolean }[] = [
+// Each setting (copperUnderMask only applies with both copper and mask, maskOneFace with the mask: see
+// choiceApplies).
+const CHOICES: { key: Toggle; label: string; indent?: boolean; hint?: string }[] = [
+	{ key: "onePart", label: "One part", hint: "Everything as one part. Off: an assembly with the board's layers and every component as parts of their own." },
 	{ key: "parts", label: "Parts" },
 	{ key: "copper", label: "Copper" },
 	{ key: "copperUnderMask", label: "Copper under the solder mask", indent: true },
 	{ key: "platedHoles", label: "Plated holes" },
 	{ key: "mask", label: "Solder mask" },
+	{ key: "maskOneFace", label: "Solder mask as one face", indent: true, hint: "Off: the mask is cut into tiles. Big boards import faster in CAD, but the seams show as lines across the board." },
 	{ key: "silkscreen", label: "Silkscreen" },
 	{ key: "viaHoles", label: "Drill via holes" },
 ]
@@ -72,7 +75,7 @@ export function StepExportDialog({ onExport, onClose }: { onExport(options: Step
 					</div>
 					<div className="step-options">
 						{CHOICES.map(c => (
-							<label key={c.key} className={`step-option${c.indent ? " indent" : ""}`} aria-disabled={!choiceApplies(c.key, options)}>
+							<label key={c.key} className={`step-option${c.indent ? " indent" : ""}`} aria-disabled={!choiceApplies(c.key, options)} title={c.hint}>
 								<input type="checkbox" checked={options[c.key]} disabled={!choiceApplies(c.key, options)} onChange={e => setOptions({ ...options, [c.key]: e.target.checked })} />
 								<span className="step-option-label">{c.label}</span>
 							</label>

@@ -18,13 +18,26 @@ export class ViewLink<T> {
 	}
 }
 
-// What a diff pane paints over its view: the objects found in only this side's commit (PCB object ids,
-// or schematic record indices), red where they were removed, green where added.
+// What the primary pane of a diff paints over its view, against the secondary: green what only it
+// has, red what only the secondary has (drawn where it is there). The secondary is shown plain.
 export interface PaneMark {
-	ids: Set<number>
-	tone: "removed" | "added"
+	ids: Set<number> // schematic: the records only this commit has
+	ghosts: string[] // schematic: the secondary's records this commit lacks, as the secondary draws them
+	moves?: { members: number[]; dx: number; dy: number }[] // schematic: blocks moved together (their records here; dx, dy to where they are in the other)
 	mostly: boolean // most of it changed: say so instead of painting everything
-	repoured?: number // PCB: changed polygon pours, counted but not painted (any nearby change re-pours them)
+	dim: boolean // deltas only: everything else greyed
+	artwork?: ArtworkMark
+}
+
+// PCB: the artwork that differs (each piece with its layer), the parts moved, added or removed (their
+// outlines: green where a part is, red where it was), the blocks moved together, every changed area and
+// the one picked last.
+export interface ArtworkMark {
+	pieces: { layer: string; rings: number[][]; tone: "added" | "removed"; big: boolean }[] // big: a cell or more across
+	parts: { box: number[]; tone: "added" | "removed"; side: "top" | "bottom" }[]
+	moves: { here: number[]; there: number[]; layers: string[] }[] // blocks moved together: their extent here and in the other commit
+	areas: { box: [number, number, number, number] }[]
+	focus: { area: number; seq: number } | null
 }
 
 // One side of a comparison. The default (no provider) is the open project as the store has it.

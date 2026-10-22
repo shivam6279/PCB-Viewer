@@ -4,27 +4,26 @@ import { ChevronDown, ChevronRight } from "lucide-react"
 import type { MenuNode } from "./interaction"
 import { DocIcon } from "../app/tree-icons"
 
-// The port / sheet entry popup: the sheet instances the net reaches, as a tree, at the cursor.
+export interface PopupArea {
+	left: number
+	top: number
+	width: number
+	height: number
+}
+
+// A popup at the cursor over the schematic, kept inside the view; Escape or a press outside closes it.
 // It lives on the page body (fixed, over the inspector): each tab's view is its own compositor layer,
 // which would otherwise trap it underneath. x, y are relative to the view's area.
-export function PortMenu({ x, y, area, items, onPick, onClose }: {
+export function SchPopup({ x, y, area, className, label, onClose, children }: {
 	x: number
 	y: number
-	area: { left: number; top: number; width: number; height: number }
-	items: MenuNode[]
-	onPick(instanceId: string): void
+	area: PopupArea
+	className: string
+	label: string
 	onClose(): void
+	children: ReactNode
 }) {
 	const ref = useRef<HTMLDivElement>(null)
-	const [open, setOpen] = useState<Set<string>>(() => {
-		const keys = new Set<string>()
-		const walk = (n: MenuNode) => {
-			if (n.expanded) keys.add(n.key)
-			n.children.forEach(walk)
-		}
-		items.forEach(walk)
-		return keys
-	})
 	const [pos, setPos] = useState({ x, y })
 
 	useEffect(() => {
@@ -40,15 +39,59 @@ export function PortMenu({ x, y, area, items, onPick, onClose }: {
 		}
 	}, [onClose])
 
-	// Keep the menu inside the view.
+	// Keep it inside the view, also as it grows (a branch opened).
 	useEffect(() => {
 		const el = ref.current
 		if (!el) return
-		setPos({
-			x: Math.max(0, Math.min(x, area.width - el.offsetWidth - 4)),
-			y: Math.max(0, Math.min(y, area.height - el.offsetHeight - 4)),
-		})
-	}, [x, y, open, area.width, area.height])
+		const fit = () =>
+			setPos({
+				x: Math.max(0, Math.min(x, area.width - el.offsetWidth - 4)),
+				y: Math.max(0, Math.min(y, area.height - el.offsetHeight - 4)),
+			})
+		fit()
+		const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit)
+		resize?.observe(el)
+		return () => resize?.disconnect()
+	}, [x, y, area.width, area.height])
+
+	return createPortal(
+		<div
+			ref={ref}
+			className={`sch-popup ${className}`}
+			role="menu"
+			aria-label={label}
+			style={{ left: area.left + pos.x, top: area.top + pos.y }}
+			onPointerDown={e => e.stopPropagation()}
+			onPointerUp={e => e.stopPropagation()}
+			onPointerMove={e => e.stopPropagation()}
+			onWheel={e => e.stopPropagation()}
+			onContextMenu={e => e.preventDefault()}
+		>
+			{children}
+		</div>,
+		document.body,
+	)
+}
+
+// The port / sheet entry / net popup: the sheet instances the net reaches, as a tree, at the cursor.
+export function PortMenu({ x, y, area, title, items, onPick, onClose }: {
+	x: number
+	y: number
+	area: PopupArea
+	title?: string
+	items: MenuNode[]
+	onPick(instanceId: string): void
+	onClose(): void
+}) {
+	const [open, setOpen] = useState<Set<string>>(() => {
+		const keys = new Set<string>()
+		const walk = (n: MenuNode) => {
+			if (n.expanded) keys.add(n.key)
+			n.children.forEach(walk)
+		}
+		items.forEach(walk)
+		return keys
+	})
 
 	const toggle = (key: string) =>
 		setOpen(prev => {
@@ -92,19 +135,10 @@ export function PortMenu({ x, y, area, items, onPick, onClose }: {
 			]
 		})
 
-	return createPortal(
-		<div
-			ref={ref}
-			className="port-menu"
-			role="menu"
-			style={{ left: area.left + pos.x, top: area.top + pos.y }}
-			onPointerDown={e => e.stopPropagation()}
-			onPointerUp={e => e.stopPropagation()}
-			onPointerMove={e => e.stopPropagation()}
-			onWheel={e => e.stopPropagation()}
-		>
+	return (
+		<SchPopup x={x} y={y} area={area} className="port-menu" label={title ? `Sheets with ${title}` : "Sheets"} onClose={onClose}>
+			{title && <div className="sch-popup-title">{title}</div>}
 			{rows(items, 0)}
-		</div>,
-		document.body,
+		</SchPopup>
 	)
 }

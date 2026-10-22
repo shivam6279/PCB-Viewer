@@ -21,3 +21,10 @@ test("strips script, event handlers, foreign content and the full-bleed backgrou
 test("rejects markup that is not an SVG", () => {
 	expect(() => prepareSheetSvg("<html></html>")).toThrow()
 })
+
+test("net labels are moved over everything else on the sheet", () => {
+	const { markup } = prepareSheetSvg(
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><g data-sheet-content="true"><g data-i="1" data-k="25"/><g data-i="2" data-k="27"/><g data-i="3" data-k="26"/></g></svg>',
+	)
+	expect([...markup.matchAll(/data-i="(\d)"/g)].map(m => m[1])).toEqual(["2", "3", "1"])
+})

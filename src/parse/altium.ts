@@ -59,6 +59,9 @@ export interface SheetRenderOptions {
 	projectName: string | null
 	// The REPEAT channel this instance of the sheet is drawn for (designators get the channel suffix).
 	channel?: { index: number; name: string } | null
+	// The variant shown (=VariantName) and values only the app knows (=VersionControl_RevNumber).
+	variantName?: string | null
+	parameters?: Record<string, string>
 }
 
 // The project file supplies the parameters that fill title-block strings like =Title, and net colours.
@@ -70,6 +73,8 @@ export function renderSheetSvg(bytes: Uint8Array, options: SheetRenderOptions): 
 		projectName: options.projectName ?? undefined,
 		netColors: projectText !== null ? parseNetColors(projectText) : undefined,
 		additionalRecords: parseAdditionalRecords(bytes),
+		variantName: options.variantName ?? "[No Variations]",
+		parameters: options.parameters,
 		channel: options.channel
 			? {
 					...options.channel,

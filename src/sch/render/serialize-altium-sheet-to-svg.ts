@@ -470,6 +470,7 @@ function renderSchematicRecord(
           record,
           reference: sourceText,
           variantName: options.variantName,
+          parameters: options.parameters,
         }) ?? sourceText)
       : sourceText
     if (!text) return undefined
@@ -482,13 +483,8 @@ function renderSchematicRecord(
       sheetRecord: context.sheetRecord,
     })
     const positioning = getSchematicTextPositioning(record)
-    // A channel designator is followed by the logical one in small grey brackets: "R5_ESC_1 (R5_ESC)".
-    const logical =
-      shownText !== text
-        ? `<tspan fill="#8c8c8c" font-size="0.8em"> (${escapeXml(text)})</tspan>`
-        : ""
     const renderedText =
-      (kind === "25" ? renderAltiumNegatedText(shownText) : escapeXml(shownText)) + logical
+      kind === "25" ? renderAltiumNegatedText(shownText) : escapeXml(shownText)
     return `<text ${metadata} x="0" y="0" fill="${color}" ${font.attributes} text-anchor="${positioning.anchor}" dominant-baseline="${positioning.baseline}" transform="translate(${formatSvgNumber(x)} ${formatSvgNumber(y)}) rotate(${formatSvgNumber(positioning.rotation)})">${renderedText}</text>`
   }
 
