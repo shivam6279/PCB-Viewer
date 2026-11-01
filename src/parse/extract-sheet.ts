@@ -2,6 +2,7 @@
 // the record's index among the document's records, the same numbering the renderer writes as data-i.
 import { AltiumRecord, type AltiumSchDoc } from "altiumts"
 import { getSchematicCoordinate, getSchematicIndexedPoints } from "../sch/render/altium-values"
+import { harnessConnectorFrame } from "../sch/render/render-harness"
 import { resolveSchematicParameterReferenceWithContext } from "../sch/render/schematic-parameter-reference"
 import { libraryItem } from "../model/library-item"
 import { ADDITIONAL_BASE, type Parameter, type Pt, type SheetComponent, type SheetData, type SheetObject, type SheetSymbol } from "../model/schematic-data"
@@ -196,9 +197,7 @@ function extractHarness(records: AltiumRecord[]): SheetObject[] {
 		const i = ADDITIONAL_BASE + k
 		if (r.recordKind === "218") out.push({ kind: "harnessWire", i, points: getSchematicIndexedPoints(r) })
 		if (r.recordKind === "215") {
-			const at = location(r)
-			const tip = { x: at.x, y: at.y - getSchematicCoordinate(r, { key: "PRIMARYCONNECTIONPOSITION", fallback: 0 }) }
-			const connector = { kind: "harnessConnector" as const, i, tip, entries: [] as { i: number; name: string; at: Pt }[] }
+			const connector = { kind: "harnessConnector" as const, i, tip: harnessConnectorFrame(r).tip, entries: [] as { i: number; name: string; at: Pt }[] }
 			connectors.set(k, connector)
 			out.push(connector)
 			lastConnector = k
@@ -207,9 +206,8 @@ function extractHarness(records: AltiumRecord[]): SheetObject[] {
 			const owner = connectors.get(r.getNumber("OWNERINDEX") ?? lastConnector)
 			const ownerRecord = records[r.getNumber("OWNERINDEX") ?? lastConnector]
 			if (!owner || !ownerRecord) continue
-			const top = getSchematicCoordinate(ownerRecord, { key: "LOCATION.Y" })
-			const right = getSchematicCoordinate(ownerRecord, { key: "LOCATION.X" }) + getSchematicCoordinate(ownerRecord, { key: "XSIZE", fallback: 50 })
-			owner.entries.push({ i, name: r.getDecoded("NAME") ?? "", at: { x: right, y: top - (r.getNumber("DISTANCEFROMTOP") ?? 0) * ENTRY_STEP } })
+			const at = harnessConnectorFrame(ownerRecord).entryAt(r.getNumber("DISTANCEFROMTOP") ?? 0)
+			owner.entries.push({ i, name: r.getDecoded("NAME") ?? "", at })
 		}
 	}
 	return out

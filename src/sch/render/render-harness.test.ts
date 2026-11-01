@@ -1,6 +1,7 @@
 import { expect, test } from "vitest"
 import { parseAltiumSchDoc } from "altiumts"
 import { serializeAltiumSheetToSvg } from "./serialize-altium-sheet-to-svg"
+import { harnessConnectorFrame } from "./render-harness"
 
 // Expected geometry/colours for Cubli ESC_MCU.SchDoc (I2C harness connector and port).
 // SVG x = Altium x, SVG y = 950 - Altium y (B sheet, margin 0).
@@ -71,4 +72,27 @@ test("a blanket is its outline, dashed in its colour, unfilled unless solid", ()
 	expect(b).toContain('fill="none" stroke="#ff0000"')
 	expect(b).toContain('stroke-dasharray="5 3"')
 	expect(group(render([], [BLANKET().replace("AreaColor=16777215", "AreaColor=65535|IsSolid=T").replaceAll("LineStyleExt=1", "LineStyleExt=0")]), "225")).toMatch(/fill="#ffff00"[^>]*stroke="#ff0000"(?![^>]*dasharray)/)
+})
+
+test("a right-side connector: brace and primary connection on the right, entries on the left edge", () => {
+	const right = CONNECTOR.replace("XSIZE=50", "XSIZE=40") + "|HARNESSCONNECTORSIDE=1"
+	const svg = render([], [right, ENTRY("MDC", 1), ENTRY("MDIO", 2), TYPE_LABEL.replace("LOCATION.X=220", "LOCATION.X=170").replace("|JUSTIFICATION=2", "")])
+	const c = group(svg, "215")
+	// Brace down x = 205 (5 in from the right edge at 210) to its tip at (210, 230 - 20).
+	expect(c).toContain("L 205 735")
+	expect(c).toContain("210 740")
+	expect(c).toMatch(/<circle cx="170" cy="730" r="1"/)
+	expect(c).toMatch(/<circle cx="170" cy="740" r="1"/)
+	expect(c).toMatch(/<text x="175" y="730" text-anchor="start"[^>]*>MDC<\/text>/)
+	// No JUSTIFICATION: the type label's bottom-left corner is its location.
+	expect(c).toMatch(/<text x="170" y="720" text-anchor="start" dominant-baseline="text-after-edge"[^>]*>I2C<\/text>/)
+})
+
+test("the connector's primary connection and entry points follow its side", () => {
+	const frame = (side: number) =>
+		harnessConnectorFrame(parseAltiumSchDoc([HEADER, `${CONNECTOR}|HARNESSCONNECTORSIDE=${side}`].join("\r\n")).records.find(r => r.recordKind === "215")!)
+	expect([frame(0).tip, frame(0).entryAt(1)]).toEqual([{ x: 170, y: 210 }, { x: 220, y: 220 }])
+	expect([frame(1).tip, frame(1).entryAt(1)]).toEqual([{ x: 220, y: 210 }, { x: 170, y: 220 }])
+	expect([frame(2).tip, frame(2).entryAt(1)]).toEqual([{ x: 190, y: 230 }, { x: 180, y: 200 }])
+	expect([frame(3).tip, frame(3).entryAt(1)]).toEqual([{ x: 190, y: 200 }, { x: 180, y: 230 }])
 })

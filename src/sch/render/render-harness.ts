@@ -43,49 +43,101 @@ export function renderHarnessRecords(
   return out.join("")
 }
 
+// A connector's frame. HARNESSCONNECTORSIDE is the side its brace (and primary connection) is on:
+// 0 left, 1 right, 2 top, 3 bottom; the entries sit on the opposite edge. Positions along the brace edge
+// (the primary connection, entries' DISTANCEFROMTOP x 10) count from the top, or from the left on a
+// top/bottom connector. at(a, b) maps a position a along the brace edge, b in from it, to sheet units.
+export interface HarnessConnectorFrame {
+  side: number
+  length: number // along the brace edge
+  depth: number // brace edge to the entry edge
+  tipAlong: number
+  at(along: number, inward: number): SvgPoint
+  tip: SvgPoint
+  entryAt(distanceFromTop: number): SvgPoint
+}
+
+export function harnessConnectorFrame(record: AltiumRecord): HarnessConnectorFrame {
+  const left = getSchematicCoordinate(record, { key: "LOCATION.X" })
+  const top = getSchematicCoordinate(record, { key: "LOCATION.Y" })
+  const width = getSchematicCoordinate(record, { key: "XSIZE", fallback: 50 })
+  const height = getSchematicCoordinate(record, { key: "YSIZE", fallback: 30 })
+  const side = Math.round(record.getNumber("HARNESSCONNECTORSIDE") ?? 0)
+  const vertical = side === 2 || side === 3
+  const length = vertical ? width : height
+  const depth = vertical ? height : width
+  const at = (a: number, b: number): SvgPoint => {
+    if (side === 1) return { x: left + width - b, y: top - a }
+    if (side === 2) return { x: left + a, y: top - b }
+    if (side === 3) return { x: left + a, y: top - height + b }
+    return { x: left + b, y: top - a }
+  }
+  const tipAlong = getSchematicCoordinate(record, { key: "PRIMARYCONNECTIONPOSITION", fallback: length / 2 })
+  return {
+    side,
+    length,
+    depth,
+    tipAlong,
+    at,
+    tip: at(tipAlong, 0),
+    entryAt: distance => at(distance * ENTRY_STEP, depth),
+  }
+}
+
 function renderHarnessConnector(
   record: AltiumRecord,
   children: AltiumRecord[],
   viewport: SvgViewport,
   sheetRecord: AltiumSchSheetRecord | undefined,
 ): string {
-  const left = getSchematicCoordinate(record, { key: "LOCATION.X" })
-  const top = getSchematicCoordinate(record, { key: "LOCATION.Y" })
-  const right = left + getSchematicCoordinate(record, { key: "XSIZE", fallback: 50 })
-  const bottom = top - getSchematicCoordinate(record, { key: "YSIZE", fallback: 30 })
-  const tipY = top - getSchematicCoordinate(record, { key: "PRIMARYCONNECTIONPOSITION", fallback: (top - bottom) / 2 })
-  const inset = left + BRACE_INSET
-  const P = (x: number, y: number) => `${n(viewport.toX(x))} ${n(viewport.toY(y))}`
+  const frame = harnessConnectorFrame(record)
+  const { length, depth, tipAlong } = frame
+  const P = (a: number, b: number) => {
+    const p = frame.at(a, b)
+    return `${n(viewport.toX(p.x))} ${n(viewport.toY(p.y))}`
+  }
 
-  // Left side: rounded corners, then a brace pointing out at the primary connection.
+  // The brace side: rounded corners, then a brace pointing out at the primary connection.
   const brace =
-    `M ${P(inset + CORNER, top)} Q ${P(inset, top)} ${P(inset, top - CORNER)} ` +
-    `L ${P(inset, tipY + CORNER)} Q ${P(inset, tipY)} ${P(left, tipY)} ` +
-    `Q ${P(inset, tipY)} ${P(inset, tipY - CORNER)} ` +
-    `L ${P(inset, bottom + CORNER)} Q ${P(inset, bottom)} ${P(inset + CORNER, bottom)}`
+    `M ${P(0, BRACE_INSET + CORNER)} Q ${P(0, BRACE_INSET)} ${P(CORNER, BRACE_INSET)} ` +
+    `L ${P(tipAlong - CORNER, BRACE_INSET)} Q ${P(tipAlong, BRACE_INSET)} ${P(tipAlong, 0)} ` +
+    `Q ${P(tipAlong, BRACE_INSET)} ${P(tipAlong + CORNER, BRACE_INSET)} ` +
+    `L ${P(length - CORNER, BRACE_INSET)} Q ${P(length, BRACE_INSET)} ${P(length, BRACE_INSET + CORNER)}`
   const outline = altiumColorToCss(record.getCaseInsensitive("COLOR"), "#8f9fc9")
   const width = LINE_WIDTHS[readSchematicInteger(record.getCaseInsensitive("LINEWIDTH"), 1)] ?? 1
   const parts = [
-    `<path d="${brace} L ${P(right, bottom)} L ${P(right, top)} Z" fill="${altiumColorToCss(record.getCaseInsensitive("AREACOLOR"), "#edf2fb")}"/>`,
+    `<path d="${brace} L ${P(length, depth)} L ${P(0, depth)} Z" fill="${altiumColorToCss(record.getCaseInsensitive("AREACOLOR"), "#edf2fb")}"/>`,
     `<path d="${brace}" fill="none" stroke="${outline}" stroke-width="${n(width)}"/>`,
   ]
 
+  // Entry names read inward from the entry edge: right-aligned on a left-brace connector, left-aligned on
+  // a right-brace one, turned upright on a top/bottom one.
+  const anchor = frame.side === 1 || frame.side === 2 ? "start" : "end"
   for (const child of children) {
     if (child.recordKind === "216") {
-      const y = top - (child.getNumber("DISTANCEFROMTOP") ?? 0) * ENTRY_STEP
+      const distance = child.getNumber("DISTANCEFROMTOP") ?? 0
+      const dot = frame.at(distance * ENTRY_STEP, depth)
+      const label = frame.at(distance * ENTRY_STEP, depth - ENTRY_TEXT_INSET)
       const color = altiumColorToCss(child.getCaseInsensitive("COLOR"), "#003a70")
       const textColor = altiumColorToCss(child.getCaseInsensitive("TEXTCOLOR"), color)
       const font = getSchematicFont({ fontIdFieldName: "TEXTFONTID", record: child, sheetRecord })
+      const lx = n(viewport.toX(label.x))
+      const ly = n(viewport.toY(label.y))
+      const turn = frame.side === 2 || frame.side === 3 ? ` transform="rotate(-90 ${lx} ${ly})"` : ""
       parts.push(
-        `<circle cx="${n(viewport.toX(right))}" cy="${n(viewport.toY(y))}" r="1" fill="${color}"/>`,
-        `<text x="${n(viewport.toX(right - ENTRY_TEXT_INSET))}" y="${n(viewport.toY(y))}" text-anchor="end" dominant-baseline="central" fill="${textColor}" ${font.attributes}>${escapeXml(child.getDecoded("NAME") ?? "")}</text>`,
+        `<circle cx="${n(viewport.toX(dot.x))}" cy="${n(viewport.toY(dot.y))}" r="1" fill="${color}"/>`,
+        `<text x="${lx}" y="${ly}"${turn} text-anchor="${anchor}" dominant-baseline="central" fill="${textColor}" ${font.attributes}>${escapeXml(child.getDecoded("NAME") ?? "")}</text>`,
       )
     } else {
+      // The type label: JUSTIFICATION 0-8 = bottom/middle/top rows of left/centre/right.
       const x = getSchematicCoordinate(child, { key: "LOCATION.X" })
       const y = getSchematicCoordinate(child, { key: "LOCATION.Y" })
+      const justification = Math.min(Math.max(Math.round(child.getNumber("JUSTIFICATION") ?? 0), 0), 8)
+      const textAnchor = ["start", "middle", "end"][justification % 3]
+      const baseline = ["text-after-edge", "central", "text-before-edge"][Math.floor(justification / 3)]
       const font = getSchematicFont({ record: child, sheetRecord })
       parts.push(
-        `<text x="${n(viewport.toX(x))}" y="${n(viewport.toY(y))}" text-anchor="end" dominant-baseline="text-after-edge" fill="${altiumColorToCss(child.getCaseInsensitive("COLOR"), "#000080")}" ${font.attributes}>${escapeXml(child.getDecoded("TEXT") ?? "")}</text>`,
+        `<text x="${n(viewport.toX(x))}" y="${n(viewport.toY(y))}" text-anchor="${textAnchor}" dominant-baseline="${baseline}" fill="${altiumColorToCss(child.getCaseInsensitive("COLOR"), "#000080")}" ${font.attributes}>${escapeXml(child.getDecoded("TEXT") ?? "")}</text>`,
       )
     }
   }
