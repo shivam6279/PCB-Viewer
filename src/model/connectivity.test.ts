@@ -110,3 +110,51 @@ test("a bus gathers its lines, entries and range-named labels/ports; equal bus l
 	expect(c.buses[0]!.members.get(1)).toEqual([c.netOf.get(7)])
 	expect(c.netOf.get(6)).toBeUndefined() // the range-named port is the bus's, not a net
 })
+
+test("on one sheet a net label, power port and off-sheet connector of one name are one net; a port is not", () => {
+	const c = sheetConnectivity(
+		sheet([
+			wire(1, [0, 0], [10, 0]),
+			{ kind: "label", i: 2, name: "5V", at: { x: 5, y: 0 } },
+			wire(3, [0, 50], [10, 50]),
+			{ kind: "power", i: 4, name: "5v", at: { x: 0, y: 50 } },
+			wire(5, [0, 100], [10, 100]),
+			{ kind: "offsheet", i: 6, name: "5V", at: { x: 0, y: 100 } },
+			wire(7, [0, 150], [10, 150]),
+			{ kind: "port", i: 8, name: "5V", ends: [{ x: 0, y: 150 }, { x: -40, y: 150 }], harness: false },
+		]),
+	)
+	expect(sameNet(c, 1, 3)).toBe(true)
+	expect(sameNet(c, 1, 5)).toBe(true)
+	expect(sameNet(c, 1, 7)).toBe(false)
+})
+
+test("harness wires with equal labels are one harness", () => {
+	const c = sheetConnectivity(
+		sheet([
+			{ kind: "harnessWire", i: 1, points: [{ x: 0, y: 0 }, { x: 50, y: 0 }] },
+			{ kind: "label", i: 2, name: "I2C2", at: { x: 20, y: 0 } },
+			{ kind: "harnessWire", i: 3, points: [{ x: 0, y: 100 }, { x: 50, y: 100 }] },
+			{ kind: "label", i: 4, name: "I2C2", at: { x: 20, y: 100 } },
+		]),
+	)
+	expect(c.harnesses).toHaveLength(1)
+})
+
+test("a range-named harness entry carries the bus wired to it, element by element", () => {
+	const c = sheetConnectivity(
+		sheet([
+			{ kind: "harnessConnector", i: 60, tip: { x: 0, y: 0 }, entries: [{ i: 61, name: "DATA[0..1]", at: { x: 50, y: 0 } }] },
+			{ kind: "bus", i: 62, points: [{ x: 50, y: 0 }, { x: 100, y: 0 }] },
+			{ kind: "label", i: 63, name: "SD_DATA[0..1]", at: { x: 80, y: 0 } },
+			wire(64, [0, 50], [10, 50]),
+			{ kind: "label", i: 65, name: "SD_DATA0", at: { x: 5, y: 50 } },
+			wire(66, [0, 60], [10, 60]),
+			{ kind: "label", i: 67, name: "SD_DATA1", at: { x: 5, y: 60 } },
+		]),
+	)
+	const h = c.harnesses[0]!
+	expect(h.members.get("DATA0")).toBe(c.netOf.get(64))
+	expect(h.members.get("DATA1")).toBe(c.netOf.get(66))
+	expect(c.netOf.get(61)).toBeUndefined()
+})

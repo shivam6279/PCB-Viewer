@@ -1,7 +1,7 @@
 // Everything the interactive views need beyond the drawings: each sheet's objects, the compiled
 // project (nets across sheet instances and channels, components) and the board's data. Runs in the
 // parse worker; the result is plain, structured-clone-able data.
-import { compileProject, type CompiledProject, type CompileInstance } from "../model/compile"
+import { compileProject, netNamingOf, netScopeOf, type CompiledProject, type CompileInstance } from "../model/compile"
 import type { SheetData } from "../model/schematic-data"
 import { decodeText, parseAdditionalRecords, parseNetColors, parseSchDoc } from "./altium"
 import type { AltiumBinaryPcbDoc } from "altiumts"
@@ -62,6 +62,8 @@ export function buildProjectData(input: ProjectDataInput): ProjectData {
 		}
 	}
 	const compiled = compileProject({
+		netScope: input.project ? netScopeOf(decodeText(input.project)) : "automatic",
+		naming: input.project ? netNamingOf(decodeText(input.project)) : undefined,
 		instances: input.instances.filter(i => sheets.has(i.docPath)),
 		sheets,
 		designatorFormat: input.designatorFormat,

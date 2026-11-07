@@ -32,3 +32,15 @@ describe.skipIf(!hasCorpus)("a harness connector with its brace on the right (Pn
 		expect(compiled.nets.filter(n => n.netName.startsWith("Harness."))).toEqual([])
 	}, 120000)
 })
+
+describe.skipIf(!hasCorpus)("off-sheet connectors (POE_dev_board_1G)", () => {
+	test("MCT0-3 each join Ethernet Connectors and Regulator, as on the board", async () => {
+		const { compiled } = await projectData(join(CORPUS, "Raise Robotics/POE_dev_board_1G"), "POE_dev_board_1G.PrjPcb")
+		const pins = (name: string) => compiled.nets.filter(n => n.netName === name).map(n => n.pins.map(p => `${p.component}.${p.pin}`).sort().join(" "))
+		expect(pins("MCT0")).toEqual(["R5.1 T1.5 U2.3"])
+		expect(pins("MCT1")).toEqual(["R6.1 T2.5 U2.2"])
+		expect(pins("MCT2")).toEqual(["R7.1 T3.5 U3.3"])
+		// The MCT3 connector on Ethernet Connectors sits on no wire: it joins through the net label MCT3 there.
+		expect(pins("MCT3")).toEqual(["R8.1 T4.5 U3.2"])
+	}, 120000)
+})

@@ -96,3 +96,23 @@ test("the connector's primary connection and entry points follow its side", () =
 	expect([frame(2).tip, frame(2).entryAt(1)]).toEqual([{ x: 190, y: 230 }, { x: 180, y: 200 }])
 	expect([frame(3).tip, frame(3).entryAt(1)]).toEqual([{ x: 190, y: 200 }, { x: 180, y: 230 }])
 })
+
+test("an off-sheet connector is two chevrons, pointing back at the wire (left) or away from it (right)", () => {
+	const connector = (style: string) =>
+		group(render([`|RECORD=17|${style}SHOWNETNAME=T|LOCATION.X=100|LOCATION.Y=500|ORIENTATION=0|COLOR=255|FONTID=1|TEXT=MCT0|ISCROSSSHEETCONNECTOR=T`]), "17")
+	// y = 950 - 500 = 450; the symbol runs right of x = 100.
+	expect(connector("")).toContain('d="M 103 447 L 100 450 L 103 453 M 108 447 L 105 450 L 108 453"')
+	expect(connector("STYLE=1|")).toContain('d="M 100 447 L 103 450 L 100 453 M 105 447 L 108 450 L 105 453"')
+	expect(connector("")).toMatch(/<text x="111"[^>]*>MCT0<\/text>/)
+})
+
+test("a power port with no style is a circle on a stem", () => {
+	const port = group(render(["|RECORD=17|SHOWNETNAME=T|LOCATION.X=100|LOCATION.Y=500|ORIENTATION=1|COLOR=128|FONTID=1|TEXT=GND"]), "17")
+	expect(port).toContain('d="M 100 450 L 100 445"')
+	expect(port).toContain('<circle cx="100" cy="442.5" r="2.5"')
+})
+
+test("a line's start shape: a solid arrow at its first point, pointing out of the line", () => {
+	const svg = render(["|RECORD=6|LINEWIDTH=1|STARTLINESHAPE=2|COLOR=255|LOCATIONCOUNT=2|X1=980|Y1=590|X2=940|Y2=590"])
+	expect(svg).toMatch(/<g data-record="6"><polyline points="980,360 940,360"[^>]*\/><path d="M 977 358.5 L 980 360 L 977 361.5 Z" fill="#ff0000"/)
+})

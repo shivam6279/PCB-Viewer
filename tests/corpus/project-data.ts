@@ -17,6 +17,7 @@ export async function projectData(dir: string, prj: string) {
 		designatorFormat: project.channelDesignatorFormat,
 		sheets: project.documents.filter(d => d.kind === "sch" && d.exists).map(d => [d.path, read(d.path)]),
 		pcb: pcb ? read(pcb.path) : null,
+		project: read(prj),
 		bomDoc: bomDoc ? { name: bomDoc.path, bytes: read(bomDoc.path) } : null,
 	})
 }

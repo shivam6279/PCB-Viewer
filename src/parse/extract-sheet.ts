@@ -79,7 +79,9 @@ export function extractSheet(document: AltiumSchDoc, additional: AltiumRecord[] 
 				objects.push({ kind: "label", i, name: r.getDecoded("TEXT") ?? "", at: location(r) })
 				break
 			case "17":
-				objects.push({ kind: "power", i, name: r.getDecoded("TEXT") ?? "", at: location(r) })
+				// A cross-sheet (off-sheet) connector is not a power port: it joins its name on its own sheet and
+				// on the sheets beside it, not project-wide.
+				objects.push({ kind: r.getBoolean("ISCROSSSHEETCONNECTOR") ? "offsheet" : "power", i, name: r.getDecoded("TEXT") ?? "", at: location(r) })
 				break
 			case "18": {
 				const start = location(r)

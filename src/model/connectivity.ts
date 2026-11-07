@@ -2,7 +2,8 @@
 // - a wire connects to anything whose hot spot lies on it (its vertices or anywhere along a segment),
 //   including another wire's end (a T-junction); wires that merely cross do not connect;
 // - pins connect at their tip; coincident hot spots connect directly;
-// - net labels, power ports, ports and off-sheet connectors with the same name join on the sheet;
+// - net labels, power ports, ports and off-sheet connectors with the same name join on the sheet, and an
+//   off-sheet connector also joins the net labels named as it is;
 // - signal harnesses form bundles (connector tip + harness wires + harness ports/entries) whose
 //   members are the nets attached to the connector's entries;
 // - buses (lines, bus entries, range-named labels/ports/entries) list as members the nets labelled
@@ -175,13 +176,13 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 				}
 				netMembers.push(o)
 				hotspots.push({ i: o.i, at: o.at })
-				joinByName(o.kind, o.name, o.i)
+				joinByName("net", o.name, o.i)
 				break
 			case "power":
 			case "offsheet":
 				netMembers.push(o)
 				hotspots.push({ i: o.i, at: o.at })
-				joinByName(o.kind, o.name, o.i)
+				joinByName("net", o.name, o.i)
 				break
 			case "port":
 				if (o.harness) {
@@ -210,7 +211,8 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 			case "harnessConnector":
 				harnessObjects.push(o)
 				harnessHotspots.push({ i: o.i, at: o.tip })
-				for (const e of o.entries) hotspots.push({ i: e.i, at: e.at })
+				// A range-named entry ("DATA[0..3]") carries a bus: it sits on the bus, not on a net.
+				for (const e of o.entries) (isBus(e.name) ? busHotspots : hotspots).push({ i: e.i, at: e.at })
 				break
 		}
 	}
@@ -218,7 +220,7 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 	connect(set, hotspots, wires)
 
 	// Local nets: one per connected group of net members (and harness connector entry dots).
-	const memberIds = [...netMembers.map(o => o.i), ...sheet.objects.flatMap(o => (o.kind === "harnessConnector" ? o.entries.map(e => e.i) : []))]
+	const memberIds = [...netMembers.map(o => o.i), ...sheet.objects.flatMap(o => (o.kind === "harnessConnector" ? o.entries.filter(e => !isBus(e.name)).map(e => e.i) : []))]
 	const rootToNet = new Map<number, LocalNet>()
 	const netOf = new Map<number, number>()
 	const nets: LocalNet[] = []
@@ -251,6 +253,17 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 	// Harness bundles.
 	const hset = new DisjointSet()
 	connect(hset, harnessHotspots, harnessLines)
+	// Equal labels on harness wires join their harnesses, as equal net labels join nets; so do equal
+	// harness ports.
+	const harnessName = new Map<string, number>()
+	for (const o of harnessObjects) {
+		if (o.kind !== "label" && o.kind !== "port") continue
+		const k = `${o.kind}:${o.name.toUpperCase()}`
+		const first = harnessName.get(k)
+		hset.add(o.i)
+		if (first === undefined) harnessName.set(k, o.i)
+		else hset.union(first, o.i)
+	}
 	const harnesses: LocalHarness[] = []
 	const harnessOf = new Map<number, number>()
 	const rootToHarness = new Map<number, LocalHarness>()
@@ -268,7 +281,7 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 		if (o.kind === "port") addName(h.ports, o.name)
 		else if (o.kind === "label") addName(h.labels, o.name)
 		else if (o.kind === "entry") h.entries.push({ symbol: o.symbol, name: o.name })
-		else if (o.kind === "harnessConnector") for (const e of o.entries) h.members.set(e.name, netOf.get(e.i)!)
+		else if (o.kind === "harnessConnector") for (const e of o.entries) if (!isBus(e.name)) h.members.set(e.name, netOf.get(e.i)!)
 	}
 
 	// Buses, and their members: the nets labelled with each element name of each range on the bus.
@@ -315,6 +328,24 @@ export function sheetConnectivity(sheet: SheetData): SheetConnectivity {
 					if (!list.includes(netId)) list.push(netId)
 				}
 			})
+
+	// A harness member that is a bus ("DATA[0..3]"): its elements (DATA0 ... DATA3) are the bus's nets in
+	// order.
+	for (const o of sheet.objects) {
+		if (o.kind !== "harnessConnector") continue
+		const h = harnesses[harnessOf.get(o.i)!]!
+		for (const e of o.entries) {
+			const elements = expandBusName(e.name)
+			if (!elements) continue
+			bset.add(e.i)
+			const b = rootToBus.get(bset.find(e.i))
+			if (!b) continue
+			elements.forEach((element, k) => {
+				const id = b.members.get(k)?.[0]
+				if (id !== undefined) h.members.set(element, id)
+			})
+		}
+	}
 
 	return { nets, netOf, harnesses, harnessOf, buses, busOf }
 }

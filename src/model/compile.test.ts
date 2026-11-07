@@ -85,7 +85,8 @@ test("a net's other names are aliases, each with the instances it is written on"
 	const p = compiled()
 	const vin = netAt(p, "Top", 1)
 	expect(vin.physicalName).toBe("VIN")
-	expect(vin.aliases).toEqual([{ name: "IN", instanceIds: ["Top/U_CH1", "Top/U_CH2"] }])
+	// IN: the sheet entry on Top and the port on each channel.
+	expect(vin.aliases).toEqual([{ name: "IN", instanceIds: ["Top", "Top/U_CH1", "Top/U_CH2"] }])
 	expect(netAt(p, "Top", 6).aliases).toEqual([])
 })
 
@@ -286,4 +287,108 @@ test("a harness is a bundle carrying its members, including BUNDLE.MEMBER labell
 	expect(p.bundles[0]!.nets).toEqual([p.netAt.S![5]!, p.netAt.S![6]!].sort((a, b) => a - b))
 	expect(p.bundleAt.S![1]).toBe(0)
 	expect(p.bundleAt.S![3]).toBe(0)
+})
+
+test("off-sheet connectors join their name on sibling sheets only, and name the net", () => {
+	// A flat design (A, B top level) and a child C under A: the connector in C stays apart.
+	const offsheet = (i: number, at: [number, number]): SheetObject => ({ kind: "offsheet", i, name: "MCT", at: P(...at) })
+	const a: SheetData = { objects: [wire(1, [0, 0], [10, 0]), pin(2, 50, "1", [0, 0]), offsheet(3, [10, 0])], components: [comp(50, "R1")], symbols: [] }
+	const b: SheetData = {
+		objects: [wire(1, [0, 0], [10, 0]), pin(2, 60, "1", [0, 0]), { kind: "label", i: 3, name: "MCT", at: P(5, 0) }, offsheet(4, [100, 100])],
+		components: [comp(60, "R2")],
+		symbols: [],
+	}
+	const c: SheetData = { objects: [wire(1, [0, 0], [10, 0]), pin(2, 70, "1", [0, 0]), offsheet(3, [10, 0])], components: [comp(70, "R3")], symbols: [] }
+	const p = compileProject({
+		instances: [
+			{ id: "A", docPath: "A.SchDoc", parentId: null, designator: null, channel: null },
+			{ id: "B", docPath: "B.SchDoc", parentId: null, designator: null, channel: null },
+			{ id: "A/C", docPath: "C.SchDoc", parentId: "A", designator: "C", channel: null },
+		],
+		sheets: new Map([["A.SchDoc", a], ["B.SchDoc", b], ["C.SchDoc", c]]),
+		designatorFormat: "$Component_$ChannelIndex",
+		netScope: "hierarchical",
+	})
+	// B's connector sits on no wire: it reaches the R2 wire through B's net label of the same name.
+	expect(netAt(p, "A", 1).id).toBe(netAt(p, "B", 1).id)
+	expect(netAt(p, "A", 1).netName).toBe("MCT")
+	expect(netAt(p, "A/C", 1).id).not.toBe(netAt(p, "A", 1).id)
+})
+
+test("Repeat(P) entries: channel k's port P joins the parent net or bus element <label>k", () => {
+	// Top: REPEAT(U_CH,1,2) with entry Repeat(IN), wired to a wire labelled PWM; a bus PWM[1..2] runs
+	// into a second symbol (the MCU) whose child labels PWM1 and PWM2 on its pins.
+	const topR: SheetData = {
+		objects: [
+			{ kind: "entry", i: 1, symbol: 10, name: "Repeat(IN)", at: P(0, 0), harness: false },
+			wire(2, [0, 0], [-50, 0]),
+			{ kind: "label", i: 3, name: "PWM", at: P(-20, 0) },
+			{ kind: "bus", i: 4, points: [P(-100, 50), P(-200, 50)] },
+			{ kind: "label", i: 5, name: "PWM[1..2]", at: P(-150, 50) },
+			{ kind: "entry", i: 6, symbol: 11, name: "PWM[1..2]", at: P(-200, 50), harness: false },
+		],
+		components: [],
+		symbols: [
+			{ i: 10, designator: "REPEAT(U_CH,1,2)", fileName: "Ch.SchDoc", uniqueId: "SYM" },
+			{ i: 11, designator: "U_MCU", fileName: "Mcu.SchDoc", uniqueId: "MCU" },
+		],
+	}
+	const mcu: SheetData = {
+		objects: [
+			{ kind: "port", i: 1, name: "PWM[1..2]", ends: [P(0, 0), P(40, 0)], harness: false },
+			wire(2, [100, 0], [150, 0]),
+			{ kind: "label", i: 3, name: "PWM1", at: P(120, 0) },
+			pin(4, 70, "1", [150, 0]),
+			wire(5, [100, 20], [150, 20]),
+			{ kind: "label", i: 6, name: "PWM2", at: P(120, 20) },
+			pin(7, 70, "2", [150, 20]),
+		],
+		components: [comp(70, "U1")],
+		symbols: [],
+	}
+	const p = compileProject({
+		instances: [
+			{ id: "Top", docPath: "Top.SchDoc", parentId: null, designator: null, channel: null },
+			{ id: "Top/U_CH1", docPath: "Ch.SchDoc", parentId: "Top", designator: "U_CH1", channel: { index: 1, name: "U_CH1" } },
+			{ id: "Top/U_CH2", docPath: "Ch.SchDoc", parentId: "Top", designator: "U_CH2", channel: { index: 2, name: "U_CH2" } },
+			{ id: "Top/U_MCU", docPath: "Mcu.SchDoc", parentId: "Top", designator: "U_MCU", channel: null },
+		],
+		sheets: new Map([["Top.SchDoc", topR], ["Ch.SchDoc", ch], ["Mcu.SchDoc", mcu]]),
+		designatorFormat: "$Component_$ChannelIndex",
+		netScope: "hierarchical",
+	})
+	// Ch's port IN is on wire 2 (C1.1).
+	expect(netAt(p, "Top/U_CH1", 2).id).toBe(netAt(p, "Top/U_MCU", 2).id)
+	expect(netAt(p, "Top/U_CH2", 2).id).toBe(netAt(p, "Top/U_MCU", 5).id)
+	expect(netAt(p, "Top/U_CH1", 2).id).not.toBe(netAt(p, "Top/U_CH2", 2).id)
+	// Channel k's net is named by the parent's element PWMk.
+	expect(netAt(p, "Top/U_CH2", 2).physicalName).toBe("PWM2")
+	// The wire on the Repeat entry is no net of its own: it is drawn as the bus of the channels' nets.
+	expect(p.netAt["Top"]?.[2]).toBeUndefined()
+	const stub = p.bundles[p.bundleAt["Top"]![2]!]!
+	expect(stub.kind).toBe("bus")
+	expect(stub.name).toBe("PWM[1..2]")
+	expect(stub.nets).toEqual(expect.arrayContaining([netAt(p, "Top/U_CH1", 2).id, netAt(p, "Top/U_CH2", 2).id]))
+	expect(p.nets.some(n => n.physicalName === "PWM" && n.pins.length === 0)).toBe(false)
+})
+
+test("net identifier scope: flat joins ports, global also labels, strict keeps power ports on their sheet", () => {
+	const one = (o: SheetObject): SheetData => ({ objects: [wire(1, [0, 0], [10, 0]), o], components: [], symbols: [] })
+	const flatInstances: CompileInstance[] = [
+		{ id: "A", docPath: "A.SchDoc", parentId: null, designator: null, channel: null },
+		{ id: "B", docPath: "B.SchDoc", parentId: null, designator: null, channel: null },
+	]
+	const run = (a: SheetObject, b: SheetObject, netScope: "flat" | "global" | "hierarchical" | "strict") => {
+		const p = compileProject({ instances: flatInstances, sheets: new Map([["A.SchDoc", one(a)], ["B.SchDoc", one(b)]]), designatorFormat: "", netScope })
+		return netAt(p, "A", 1).id === netAt(p, "B", 1).id
+	}
+	const port: SheetObject = { kind: "port", i: 2, name: "X", ends: [P(0, 0), P(-40, 0)], harness: false }
+	const label: SheetObject = { kind: "label", i: 2, name: "X", at: P(5, 0) }
+	const power: SheetObject = { kind: "power", i: 2, name: "X", at: P(0, 0) }
+	expect(run(port, port, "flat")).toBe(true)
+	expect(run(port, port, "hierarchical")).toBe(false)
+	expect(run(label, label, "flat")).toBe(false)
+	expect(run(label, label, "global")).toBe(true)
+	expect(run(power, power, "hierarchical")).toBe(true)
+	expect(run(power, power, "strict")).toBe(false)
 })

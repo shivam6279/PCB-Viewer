@@ -227,7 +227,9 @@ function renderSchematicRecord(
         ? altiumColorToCss(record.getCaseInsensitive("AREACOLOR"), "none")
         : "none"
     const strokeWidth = lineWidth
-    return `<${tag} ${metadata} points="${pointsToSvg(points, viewport)}" fill="${fill}" stroke="${color}" stroke-width="${formatSvgNumber(strokeWidth)}"/>`
+    const line = `<${tag} points="${pointsToSvg(points, viewport)}" fill="${fill}" stroke="${color}" stroke-width="${formatSvgNumber(strokeWidth)}"/>`
+    const ends = kind === "6" ? renderLineEndShapes(record, points, viewport, color, strokeWidth) : ""
+    return ends ? `<g ${metadata}>${line}${ends}</g>` : line.replace(`<${tag} `, `<${tag} ${metadata} `)
   }
 
   if (kind === "13" || kind === "37") {
@@ -759,6 +761,47 @@ function renderSchematicPin(
   return `<g ${metadata}><line x1="${formatSvgNumber(pinEdgeSymbols.lineStartPosition.x)}" y1="${formatSvgNumber(pinEdgeSymbols.lineStartPosition.y)}" x2="${formatSvgNumber(connection.x)}" y2="${formatSvgNumber(connection.y)}" stroke="${color}" stroke-width="1"/>${pinEdgeSymbols.svg}${electricalSymbol}${designatorSvg}${nameSvg}</g>`
 }
 
+// A polyline's end shapes (STARTLINESHAPE / ENDLINESHAPE): 1 arrow, 2 solid arrow, 3 tail, 4 solid
+// tail, 5 circle, 6 square; LINESHAPESIZE 0-3 = extra small to large.
+const LINE_SHAPE_SIZES = [3, 5, 7, 10]
+
+function renderLineEndShapes(
+  record: AltiumRecord,
+  points: SvgPoint[],
+  viewport: SvgViewport,
+  color: string,
+  strokeWidth: number,
+): string {
+  const size = LINE_SHAPE_SIZES[Math.min(Math.max(Math.round(record.getNumber("LINESHAPESIZE") ?? 0), 0), 3)]!
+  const out: string[] = []
+  const ends: [number, SvgPoint, SvgPoint][] = [
+    [Math.round(record.getNumber("STARTLINESHAPE") ?? 0), points[0]!, points[1]!],
+    [Math.round(record.getNumber("ENDLINESHAPE") ?? 0), points[points.length - 1]!, points[points.length - 2]!],
+  ]
+  for (const [shape, tip, from] of ends) {
+    if (shape <= 0 || shape > 6) continue
+    const length = Math.hypot(tip.x - from.x, tip.y - from.y)
+    if (length === 0) continue
+    // Sheet units: along points back from the tip into the line, across is perpendicular to it.
+    const ux = (from.x - tip.x) / length
+    const uy = (from.y - tip.y) / length
+    const at = (along: number, across: number) =>
+      `${formatSvgNumber(viewport.toX(tip.x + ux * along - uy * across))} ${formatSvgNumber(viewport.toY(tip.y + uy * along + ux * across))}`
+    const solid = shape === 2 || shape === 4
+    const paint = solid ? `fill="${color}" stroke="${color}"` : `fill="none" stroke="${color}"`
+    const width = `stroke-width="${formatSvgNumber(strokeWidth)}" stroke-linejoin="miter"`
+    const half = size / 2
+    if (shape === 1) out.push(`<path d="M ${at(size, -half)} L ${at(0, 0)} L ${at(size, half)}" ${paint} ${width}/>`)
+    else if (shape === 2) out.push(`<path d="M ${at(size, -half)} L ${at(0, 0)} L ${at(size, half)} Z" ${paint} ${width}/>`)
+    else if (shape === 3 || shape === 4)
+      out.push(`<path d="M ${at(0, -half)} L ${at(half, 0)} L ${at(0, half)}${solid ? ` L ${at(size, half)} L ${at(size + half, 0)} L ${at(size, -half)} Z` : ` M ${at(half, -half)} L ${at(size, 0)} L ${at(half, half)}`}" ${paint} ${width}/>`)
+    else if (shape === 5)
+      out.push(`<circle cx="${formatSvgNumber(viewport.toX(tip.x))}" cy="${formatSvgNumber(viewport.toY(tip.y))}" r="${formatSvgNumber(half)}" fill="${color}"/>`)
+    else out.push(`<path d="M ${at(-half, -half)} L ${at(half, -half)} L ${at(half, half)} L ${at(-half, half)} Z" fill="${color}"/>`)
+  }
+  return out.join("")
+}
+
 function getPowerPortOrientation(record: AltiumRecord): number {
   return ((Math.round(record.getNumber("ORIENTATION") ?? 0) % 4) + 4) % 4
 }
@@ -791,11 +834,26 @@ function renderSchematicPowerPort(
   })
   const svgPoint = (value: SvgPoint): string =>
     `${formatSvgNumber(value.x)} ${formatSvgNumber(value.y)}`
-  const style = Math.round(Number(record.getCaseInsensitive("STYLE") ?? 2))
+  // A missing STYLE is 0: circle (power port), left (off-sheet connector).
+  const style = Math.round(Number(record.getCaseInsensitive("STYLE") ?? 0))
   let symbol: string
   let labelDistance: number
+  const stroke = `fill="none" stroke="${color}" stroke-width="1"`
 
-  if (style === 2) {
+  if (record.getBoolean("ISCROSSSHEETCONNECTOR")) {
+    // Off-sheet connector: two chevrons. Style 0 (left) points back at the wire end, 1 (right) away from
+    // it; both turn with the orientation like any power object.
+    const tips = style === 1 ? [3, 8] : [0, 5]
+    const back = style === 1 ? -3 : 3
+    symbol = `<path d="${tips.map(t => `M ${svgPoint(point(t + back, -3))} L ${svgPoint(point(t))} L ${svgPoint(point(t + back, 3))}`).join(" ")}" ${stroke}/>`
+    labelDistance = 11
+  } else if (style === 0) {
+    symbol = `<path d="M ${svgPoint(origin)} L ${svgPoint(point(5))}" ${stroke}/><circle cx="${formatSvgNumber(point(7.5).x)}" cy="${formatSvgNumber(point(7.5).y)}" r="2.5" ${stroke}/>`
+    labelDistance = 13
+  } else if (style === 3) {
+    symbol = `<path d="M ${svgPoint(origin)} L ${svgPoint(point(6))} M ${svgPoint(point(6, -6))} Q ${svgPoint(point(3, -3))} ${svgPoint(point(6, 0))} Q ${svgPoint(point(9, 3))} ${svgPoint(point(6, 6))}" ${stroke}/>`
+    labelDistance = 12
+  } else if (style === 2) {
     const stemEnd = point(8)
     symbol = `<path d="M ${svgPoint(origin)} L ${svgPoint(stemEnd)} M ${svgPoint(point(8, -5))} L ${svgPoint(point(8, 5))}" fill="none" stroke="${color}" stroke-width="1"/>`
     labelDistance = 12
