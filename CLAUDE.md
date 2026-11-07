@@ -4,8 +4,8 @@ A static, client-side web app for Altium Designer projects: schematic, PCB and 3
 cross-probing, any commit of the owner's GitHub repo, and side-by-side commit diffs. Personal tool for
 the owner; hosted on GitHub Pages, nothing uploaded. Not affiliated with Altium.
 
-- **Git: commit only when the owner asks.** Branch `main`. Pages is taken down for now (both repos private,
-  the deploy workflow disabled): the owner works locally; `git push` deploys nothing.
+- **Git: commit only when the owner asks.** Branch `main`. The site is live (both repos public, the deploy
+  workflow active): every `git push` to main deploys to Pages — say so before pushing.
 - Verify before handing back: run it end to end (unit + browser tests, screenshots) — the owner should
   never be the first to find it broken.
 
@@ -46,8 +46,7 @@ npm run index            # the GitHub index from the local PCB clone, into publi
   projects; a folder holding just one project folds into it).
 - `tools/build-index.mjs`: the index, from plain git on a blobless clone (no API). Run by
   `.github/workflows/pages.yml` on push, by hand, on a `pcb-push` repository_dispatch, and every 2 hours.
-  With the deploy disabled nothing refreshes `public/index` but `npm run index` (after pulling the
-  PCB clone). `GitHub.indexFreshness` + `src/app/IndexNotice.tsx`: on opening (and signing in) the
+  Locally, `public/index` is refreshed only by `npm run index` (after pulling the PCB clone). `GitHub.indexFreshness` + `src/app/IndexNotice.tsx`: on opening (and signing in) the
   app asks GitHub for the branch heads (the one API request with an index) and shows a notice when
   the index is behind, or when it can't check (private repo without a token).
 - Screens: `src/app/Home.tsx` (start: top bar + search, project tree, drop zone or the selected
