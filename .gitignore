@@ -17,3 +17,4 @@ CLAUDE.local.md
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+dist-embed/

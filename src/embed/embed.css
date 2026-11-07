@@ -1,0 +1,6 @@
+/* The 3D view alone, filling the page (a host app's frame). The host has its own view buttons. */
+.embed { position: fixed; inset: 0; display: grid; }
+.embed > .view3d { position: relative; width: 100%; height: 100%; }
+.embed .projection-toggle, .embed .view-cube { display: none; }
+.embed-message { margin: auto; color: var(--text-dim); font-size: var(--font-size-ui); text-align: center; padding: 24px; }
+.embed > .view3d { background: #111113; } /* the host's viewport, also while loading */

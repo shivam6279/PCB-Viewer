@@ -19,6 +19,7 @@ import { MeasureTool, measureKey } from "../measure/tool"
 import { buildSolder } from "./solder"
 import type { StepQuality } from "./step-export/options"
 import { notFittedPaths, type ProjectVariant } from "../model/variants"
+import { useEmbed3d } from "../embed/bridge"
 
 // Alt+1–6, in the usual CAD order.
 const KEY_FACES: CubeFace[] = ["front", "back", "left", "right", "top", "bottom"]
@@ -181,6 +182,8 @@ export function View3d({
 		const e = new BoardEngine(el, scene, board, geometry, {
 			pick: (hit, clientX, clientY) => {
 				if (sideBySide) return // side by side: no selection (ids differ between the commits)
+				const onPick = useEmbed3d.getState().onPick
+				if (onPick) return onPick(hit?.kind === "component" ? (scene.components[hit.index]?.designator ?? null) : null)
 				if (measuringRef.current) return tool.click(clientX, clientY, ctrlHeld.current)
 				if (shiftClick) return // Shift+click leaves the selection be (Shift+double-click adds a net)
 				const state = useAppStore.getState()
@@ -521,9 +524,33 @@ export function View3d({
 		drawOverlay.current()
 	}, [measuring, measures, selection, tool, measureMode])
 
+	// Driven from outside (embed): its lit parts, tints and left-drag mode, by designator.
+	const embedLit = useEmbed3d(s => s.lit)
+	const embedTints = useEmbed3d(s => s.tints)
+	const embedLeftPans = useEmbed3d(s => s.leftPans)
+	const indexOf = useMemo(() => new Map((scene?.components ?? []).map((c, i) => [c.designator, i] as const)), [scene])
 	useEffect(() => {
-		ready?.setSelected(selectedComponents)
-	}, [ready, selectedComponents])
+		if (!ready) return
+		if (!embedLit) return ready.setSelected(selectedComponents)
+		const lit = new Set<number>()
+		for (const d of embedLit) {
+			const i = indexOf.get(d)
+			if (i !== undefined) lit.add(i)
+		}
+		ready.setSelected(lit)
+	}, [ready, selectedComponents, embedLit, indexOf])
+	useEffect(() => {
+		if (!ready) return
+		const tints = new Map<number, { color: [number, number, number]; opacity: number }>()
+		for (const [d, t] of embedTints) {
+			const i = indexOf.get(d)
+			if (i !== undefined) tints.set(i, t)
+		}
+		ready.setTints(tints)
+	}, [ready, embedTints, indexOf])
+	useEffect(() => {
+		if (ready) ready.leftPans = embedLeftPans
+	}, [ready, embedLeftPans])
 
 	// The selection's copper, as real geometry from the worker: every layer, every hole. A net or one
 	// board object shows over everything; a part's pads stay under its body.

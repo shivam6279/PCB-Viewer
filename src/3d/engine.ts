@@ -10,7 +10,7 @@ import { buildIndex, hitsAt, hitTest, netAt, type HitOptions, type PcbIndex } fr
 import type { LayerMode } from "../pcb/layer-state"
 import type { MeasureMode, MeasurePoint, SnapKind, SnapTarget, Vec3 } from "../measure/measure"
 import { circleAt, snapAt } from "../measure/snap"
-import type { Board3d, Board3dBody } from "./board3d"
+import type { Board3d, Board3dBody, Rgb } from "./board3d"
 import type { BoardGeometry, GeoMesh } from "./board-geometry"
 import { buildBoardLayers, buildHighlight, geometryOf, type BoardLayers } from "./board-layers"
 import { bodyMesh, componentMaterials, flatMaterial, missingBody, stepMaterial, type ComponentMaterials } from "./components"
@@ -134,6 +134,8 @@ export class BoardEngine {
 	private glowTarget: string | null = null
 	private glowFrame = 0
 	rotateSpeed = ROTATE_PER_PX
+	leftPans = false // a left drag pans instead of turning (a flat view that stays flat; the right button pans as ever)
+	private tints = new Map<number, { color: Rgb; opacity: number }>() // parts drawn in one flat colour (component index)
 	readonly timing = { highlight: 0, frame: 0, solder: 0 } // test hook: last highlight build, frame and solder build, ms
 	private view: CameraState
 	private autoFit = true // still on the opening view: re-fitted when the canvas gets its real size
@@ -471,10 +473,29 @@ export class BoardEngine {
 		this.requestRender()
 	}
 
+	// The colour behind the board (a host page's own viewport colour; sRGB 0..1)
+	setBackground(color: Rgb) {
+		this.world.background = new THREE.Color().setRGB(color[0], color[1], color[2], THREE.SRGBColorSpace)
+		this.requestRender()
+	}
+
+	// Parts drawn in one flat colour instead of their model's (component index -> colour, opacity), e.g. an
+	// assembly state: placed, not fitted. Lit / dimmed with the selection like any part.
+	setTints(tints: Map<number, { color: Rgb; opacity: number }>) {
+		this.tints = tints
+		for (const mesh of this.parts.children as THREE.Mesh[]) this.paint(mesh)
+		this.requestRender()
+	}
+
 	private paint(mesh: THREE.Mesh) {
 		const component = mesh.userData.component as number | null
 		const body = mesh.userData.body as Board3dBody
 		const lit = this.selected !== null && component !== null && this.selected.has(component)
+		const tint = component !== null ? this.tints.get(component) : undefined
+		if (tint && !mesh.userData.failed) {
+			mesh.material = flatMaterial(this.mats, tint.color, tint.opacity, lit)
+			return
+		}
 		if (mesh.userData.failed) {
 			const edges = mesh.children[0] as THREE.LineSegments | undefined
 			if (edges) edges.material = lit ? this.mats.missing.edgeLit : this.mats.missing.edge
@@ -832,7 +853,7 @@ export class BoardEngine {
 		const down = (e: PointerEvent) => {
 			this.stopTurn()
 			el.setPointerCapture(e.pointerId)
-			drag = { button: e.button, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, moved: false, pivot: e.button === 0 ? this.rotationPivot() : null }
+			drag = { button: e.button, x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY, moved: false, pivot: e.button === 0 && !this.leftPans ? this.rotationPivot() : null }
 		}
 		const move = (e: PointerEvent) => {
 			this.pointer = { x: e.clientX, y: e.clientY }
@@ -842,7 +863,7 @@ export class BoardEngine {
 			drag.y = e.clientY
 			if (!drag.moved && Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < CLICK_SLOP) return
 			drag.moved = true
-			if (drag.button === 0) this.rotate(dx, dy, drag.pivot ?? undefined)
+			if (drag.button === 0 && !this.leftPans) this.rotate(dx, dy, drag.pivot ?? undefined)
 			else this.pan(dx, dy)
 		}
 		const up = (e: PointerEvent) => {
